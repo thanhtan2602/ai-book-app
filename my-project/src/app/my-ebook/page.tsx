@@ -1,4 +1,3 @@
-import Link from "next/link";
 import { Home } from "lucide-react";
 import {
   Breadcrumb,
@@ -17,11 +16,9 @@ export default function MyEbookPage() {
         <Breadcrumb>
           <BreadcrumbList>
             <BreadcrumbItem>
-              <BreadcrumbLink asChild>
-                <Link href="/" className="flex items-center gap-1">
-                  <Home className="h-3.5 w-3.5" />
-                  Dashboard
-                </Link>
+              <BreadcrumbLink href="/" className="flex items-center gap-1">
+                <Home className="h-3.5 w-3.5" />
+                Dashboard
               </BreadcrumbLink>
             </BreadcrumbItem>
             <BreadcrumbSeparator />

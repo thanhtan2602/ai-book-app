@@ -1,4 +1,3 @@
-import Link from "next/link";
 import { notFound } from "next/navigation";
 import { prisma } from "@/lib/prisma";
 import { Home } from "lucide-react";
@@ -34,18 +33,14 @@ export default async function EbookReaderPage({
         <Breadcrumb>
           <BreadcrumbList>
             <BreadcrumbItem>
-              <BreadcrumbLink asChild>
-                <Link href="/" className="flex items-center gap-1">
-                  <Home className="h-3.5 w-3.5" />
-                  Dashboard
-                </Link>
+              <BreadcrumbLink href="/" className="flex items-center gap-1">
+                <Home className="h-3.5 w-3.5" />
+                Dashboard
               </BreadcrumbLink>
             </BreadcrumbItem>
             <BreadcrumbSeparator />
             <BreadcrumbItem>
-              <BreadcrumbLink asChild>
-                <Link href="/my-ebook">My eBook</Link>
-              </BreadcrumbLink>
+              <BreadcrumbLink href="/my-ebook">My eBook</BreadcrumbLink>
             </BreadcrumbItem>
             <BreadcrumbSeparator />
             <BreadcrumbItem>
