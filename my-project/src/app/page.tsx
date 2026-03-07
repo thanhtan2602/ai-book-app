@@ -10,6 +10,14 @@ import { Badge } from "@/components/ui/badge";
 import { Separator } from "@/components/ui/separator";
 import { Button } from "@/components/ui/button";
 import Link from "next/link";
+import { BookOpen, LayoutDashboard, Mic, MessageSquare } from "lucide-react";
+
+const navItems = [
+  { label: "Dashboard", href: "/", icon: LayoutDashboard },
+  { label: "My Book", href: "/my-ebook", icon: BookOpen },
+  { label: "Transcribe", href: "#", icon: Mic },
+  { label: "Chat AI", href: "#", icon: MessageSquare },
+];
 
 const stats = [
   { title: "Total Users", value: "1,234", change: "+12%", icon: "👤" },
@@ -32,9 +40,22 @@ export default function Dashboard() {
       {/* Header */}
       <header className="border-b">
         <div className="flex h-16 items-center justify-between px-6">
-          <div className="flex items-center gap-4">
+          <div className="flex items-center gap-6">
             <h1 className="text-xl font-bold">My Project</h1>
-            <Badge variant="secondary">Dashboard</Badge>
+            <nav className="flex items-center gap-1">
+              {navItems.map((item) => (
+                <Link key={item.href + item.label} href={item.href}>
+                  <Button
+                    variant={item.href === "/" ? "secondary" : "ghost"}
+                    size="sm"
+                    className="gap-2"
+                  >
+                    <item.icon className="h-4 w-4" />
+                    {item.label}
+                  </Button>
+                </Link>
+              ))}
+            </nav>
           </div>
           <div className="flex items-center gap-4">
             <Button variant="outline" size="sm">Settings</Button>
