@@ -1,8 +1,15 @@
 import Link from "next/link";
 import { notFound } from "next/navigation";
 import { prisma } from "@/lib/prisma";
-import { Button } from "@/components/ui/button";
-import { ArrowLeft } from "lucide-react";
+import { Home } from "lucide-react";
+import {
+  Breadcrumb,
+  BreadcrumbItem,
+  BreadcrumbLink,
+  BreadcrumbList,
+  BreadcrumbPage,
+  BreadcrumbSeparator,
+} from "@/components/ui/breadcrumb";
 import { EbookReader } from "../_components/ebook-reader";
 
 export default async function EbookReaderPage({
@@ -23,16 +30,32 @@ export default async function EbookReaderPage({
 
   return (
     <div className="min-h-screen bg-background">
-      <header className="sticky top-0 z-50 border-b bg-background/95 backdrop-blur supports-[backdrop-filter]:bg-background/60">
-        <div className="flex h-16 items-center px-6 gap-4">
-          <Link href="/my-ebook">
-            <Button variant="ghost" size="icon-sm">
-              <ArrowLeft className="h-4 w-4" />
-            </Button>
-          </Link>
-          <h1 className="text-sm font-semibold truncate">{ebook.title}</h1>
-        </div>
-      </header>
+      <div className="sticky top-16 z-40 border-b bg-background/95 backdrop-blur supports-backdrop-filter:bg-background/60 px-6 py-3">
+        <Breadcrumb>
+          <BreadcrumbList>
+            <BreadcrumbItem>
+              <BreadcrumbLink asChild>
+                <Link href="/" className="flex items-center gap-1">
+                  <Home className="h-3.5 w-3.5" />
+                  Dashboard
+                </Link>
+              </BreadcrumbLink>
+            </BreadcrumbItem>
+            <BreadcrumbSeparator />
+            <BreadcrumbItem>
+              <BreadcrumbLink asChild>
+                <Link href="/my-ebook">My eBook</Link>
+              </BreadcrumbLink>
+            </BreadcrumbItem>
+            <BreadcrumbSeparator />
+            <BreadcrumbItem>
+              <BreadcrumbPage className="truncate max-w-75">
+                {ebook.title}
+              </BreadcrumbPage>
+            </BreadcrumbItem>
+          </BreadcrumbList>
+        </Breadcrumb>
+      </div>
 
       <EbookReader
         title={ebook.title}

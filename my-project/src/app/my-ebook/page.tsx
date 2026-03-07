@@ -1,29 +1,36 @@
 import Link from "next/link";
-import { Button } from "@/components/ui/button";
-import { Badge } from "@/components/ui/badge";
-import { Avatar, AvatarFallback } from "@/components/ui/avatar";
-import { ArrowLeft } from "lucide-react";
+import { Home } from "lucide-react";
+import {
+  Breadcrumb,
+  BreadcrumbItem,
+  BreadcrumbLink,
+  BreadcrumbList,
+  BreadcrumbPage,
+  BreadcrumbSeparator,
+} from "@/components/ui/breadcrumb";
 import { EbookList } from "./_components/ebook-list";
 
 export default function MyEbookPage() {
   return (
     <div className="min-h-screen bg-background">
-      <header className="border-b">
-        <div className="flex h-16 items-center justify-between px-6">
-          <div className="flex items-center gap-4">
-            <Link href="/">
-              <Button variant="ghost" size="icon-sm">
-                <ArrowLeft className="h-4 w-4" />
-              </Button>
-            </Link>
-            <h1 className="text-xl font-bold">My Project</h1>
-            <Badge variant="secondary">Ebooks</Badge>
-          </div>
-          <Avatar>
-            <AvatarFallback>AD</AvatarFallback>
-          </Avatar>
-        </div>
-      </header>
+      <div className="border-b px-6 py-3">
+        <Breadcrumb>
+          <BreadcrumbList>
+            <BreadcrumbItem>
+              <BreadcrumbLink asChild>
+                <Link href="/" className="flex items-center gap-1">
+                  <Home className="h-3.5 w-3.5" />
+                  Dashboard
+                </Link>
+              </BreadcrumbLink>
+            </BreadcrumbItem>
+            <BreadcrumbSeparator />
+            <BreadcrumbItem>
+              <BreadcrumbPage>My eBook</BreadcrumbPage>
+            </BreadcrumbItem>
+          </BreadcrumbList>
+        </Breadcrumb>
+      </div>
 
       <main className="p-6">
         <EbookList />

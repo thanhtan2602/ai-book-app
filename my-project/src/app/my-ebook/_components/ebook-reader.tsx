@@ -17,6 +17,58 @@ interface EbookReaderProps {
   chapters: Chapter[];
 }
 
+function renderInline(text: string) {
+  const parts = text.split(/(\*\*[^*]+\*\*)/g);
+  return parts.map((part, i) => {
+    if (part.startsWith("**") && part.endsWith("**")) {
+      return (
+        <strong key={i} className="inline-bold">
+          {part.slice(2, -2)}
+        </strong>
+      );
+    }
+    return part;
+  });
+}
+
+function renderContent(content: string) {
+  const blocks = content.split("\n\n");
+  let isFirstParagraph = true;
+
+  return blocks.map((block, i) => {
+    const trimmed = block.trim();
+    if (!trimmed) return null;
+
+    // ## Heading
+    if (trimmed.startsWith("## ")) {
+      isFirstParagraph = true;
+      return (
+        <h3 key={i} className="section-heading">
+          {renderInline(trimmed.replace(/^##\s+/, ""))}
+        </h3>
+      );
+    }
+
+    // ### Sub-heading
+    if (trimmed.startsWith("### ")) {
+      return (
+        <h4 key={i} className="sub-heading">
+          {renderInline(trimmed.replace(/^###\s+/, ""))}
+        </h4>
+      );
+    }
+
+    // Regular paragraph
+    const className = isFirstParagraph ? "first-paragraph" : undefined;
+    isFirstParagraph = false;
+    return (
+      <p key={i} className={className}>
+        {renderInline(trimmed)}
+      </p>
+    );
+  });
+}
+
 export function EbookReader({ title, chapters }: EbookReaderProps) {
   const [activeChapter, setActiveChapter] = useState(1);
   const [sidebarOpen, setSidebarOpen] = useState(false);
@@ -91,9 +143,7 @@ export function EbookReader({ title, chapters }: EbookReaderProps) {
       <main className="flex-1 px-4 py-8 lg:px-8">
         <article className="ebook-content mx-auto">
           <h2 className="ebook-chapter-title">{current.title}</h2>
-          {current.content.split("\n\n").map((paragraph, i) => (
-            <p key={i}>{paragraph}</p>
-          ))}
+          {renderContent(current.content)}
         </article>
 
         {/* Chapter navigation */}
