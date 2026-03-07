@@ -1,0 +1,47 @@
+generator client {
+  provider = "prisma-client"
+  output   = "../src/generated/prisma"
+}
+
+datasource db {
+  provider = "postgresql"
+}
+
+model User {
+  id        String   @id @default(cuid())
+  email     String   @unique
+  name      String?
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+}
+
+enum EbookStatus {
+  PROCESSING
+  COMPLETED
+  FAILED
+}
+
+model Ebook {
+  id          String      @id @default(cuid())
+  title       String
+  description String?
+  sourceFile  String
+  language    String      @default("vi")
+  status      EbookStatus @default(PROCESSING)
+  createdAt   DateTime    @default(now())
+  updatedAt   DateTime    @updatedAt
+  chapters    Chapter[]
+}
+
+model Chapter {
+  id        String   @id @default(cuid())
+  ebookId   String
+  ebook     Ebook    @relation(fields: [ebookId], references: [id], onDelete: Cascade)
+  title     String
+  content   String   @db.Text
+  order     Int
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  @@index([ebookId])
+}

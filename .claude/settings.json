@@ -1,0 +1,37 @@
+{
+  "permissions": {
+    "allow": [
+      "Bash(npm -v)",
+      "Bash(npx create-next-app@latest . --typescript --tailwind --eslint --app --src-dir --import-alias \"@/*\" --use-npm --turbopack)",
+      "Bash(npx create-next-app@latest my-project --typescript --tailwind --eslint --app --src-dir --import-alias \"@/*\" --use-npm --turbopack)",
+      "Bash(npx shadcn@latest init -d)",
+      "Bash(npm install prisma @prisma/client @supabase/supabase-js openai)",
+      "Bash(npx prisma init --datasource-provider postgresql)",
+      "Bash(npx prisma generate)",
+      "Bash(npm run build)",
+      "Bash(npm install @prisma/adapter-pg pg)",
+      "Bash(npx shadcn@latest add card avatar badge separator -y)",
+      "Bash(npm run dev)",
+      "Bash(PORT=3005 npm run dev)",
+      "Bash(npm install -D tsx @types/pg)",
+      "Bash(npm install dotenv)",
+      "Bash(cd \"c:/PROJECT/My Project/my-project\" && npx tsx scripts/create-book.ts *)",
+      "Bash(npx tsx scripts/create-book.ts *)",
+      "Bash(find * -name \"*.srt\" *)",
+      "Bash(ls *)",
+      "Bash(mkdir -p *)",
+      "Read",
+      "Bash(node -e \":*)",
+      "Bash(nslookup db.oyzicdhfwsvcqmqmjiix.supabase.co)",
+      "Bash(nslookup aws-0-ap-southeast-1.pooler.supabase.com)",
+      "Bash(npx prisma migrate dev --name add-ebook-models)",
+      "Bash(curl -s http://localhost:3005/my-ebook)",
+      "Bash(curl -s -o /dev/null -w \"%{http_code}\" http://localhost:3005/my-ebook)",
+      "Bash(node -e \"const d=require\\(''./tmp-parsed.json''\\); const ch=d.chapters[0]; const fs=require\\(''fs''\\); fs.writeFileSync\\(''tmp-ch1.txt'', ch.text\\); console.log\\(''Ch1 written, length:'', ch.text.length\\)\")"
+    ],
+    "additionalDirectories": [
+      "c:\\PROJECT\\My Project\\my-project\\src\\app\\api\\ebooks",
+      "c:\\PROJECT\\My Project\\my-project\\src\\app\\my-ebook"
+    ]
+  }
+}
