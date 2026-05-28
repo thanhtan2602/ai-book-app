@@ -1,0 +1,474 @@
+Trong phần này, chúng ta sẽ phát triển các tầng Data Infrastructure cho Shared Library và Catalog Module sử dụng Entity Framework Core Code First với PostgreSQL. Đây là nền tảng kỹ thuật để lưu trữ và quản lý dữ liệu trong kiến trúc modular monolith của chúng ta.
+
+Nội dung sẽ bao gồm:
+- Tính năng EF Core 8, Code First Approach và Migrations
+- Cài đặt EF Core NuGet packages trong Shared Library
+- Phát triển EF Core DbContext cho Catalog Module
+- Cấu hình Entity Framework Core connection string
+- Tạo và apply EF Core migrations
+- Auto-migrate khi ứng dụng khởi động
+- Seed dữ liệu khi application startup
+- EF Core Interceptors (SaveChanges Interceptor) cho Auditing Entities
+- Dispatch Domain Events với SaveChanges Interceptor
+
+## Entity Framework Core là gì?
+
+**Entity Framework Core** (EF Core) là một công nghệ truy cập dữ liệu nhẹ, mở rộng, mã nguồn mở và đa nền tảng. EF Core đóng vai trò là một **ORM (Object-Relational Mapper)**, cho phép các lập trình viên .NET làm việc với database sử dụng các .NET objects, loại bỏ hầu hết code truy cập dữ liệu thường phải viết thủ công.
+
+EF Core hỗ trợ nhiều database engine thông qua các **database providers** — mỗi database system có provider riêng được shipped dưới dạng NuGet package, bao gồm SQL Server, SQLite, CosmosDB, PostgreSQL, MySQL, và in-memory database.
+
+## Hai cách sử dụng EF Core CLI
+
+**Cách 1: .NET Core CLI**
+```bash
+dotnet ef migrations add InitialCreate --output-dir Data/Migrations
+dotnet ef database update
+```
+Cần cài package `Microsoft.EntityFrameworkCore.Design`.
+
+**Cách 2: Package Manager Console trong Visual Studio** *(được dùng trong khóa học này)*
+```powershell
+Add-Migration InitialCreate -OutputDir Data/Migrations -Project Catalog -StartupProject API
+Update-Database -Project Catalog -StartupProject API
+```
+Cần cài package `Microsoft.EntityFrameworkCore.Tools`.
+
+## Các bước phát triển EF Core cho Catalog Module
+
+### Bước 1: Cài đặt EF Core NuGet Packages trong Shared Library
+
+Chúng ta cài vào **Shared Library** vì tất cả các modules (Catalog, Basket, Ordering) đều sử dụng cùng infrastructure components để kết nối PostgreSQL. Điều này tránh cài lặp lại nhiều lần và đơn giản hóa quản lý version.
+
+Mở Visual Studio → Shared Library → Dependencies → Manage NuGet Packages, cài 3 packages:
+
+- `Microsoft.EntityFrameworkCore` — core operations
+- `Microsoft.EntityFrameworkCore.Tools` — tooling cho Package Manager Console
+- `Npgsql.EntityFrameworkCore.PostgreSQL` — database provider cho PostgreSQL
+
+**Lưu ý quan trọng về version:** Đảm bảo tất cả 3 packages có cùng version number. Nếu `Npgsql.EntityFrameworkCore.PostgreSQL` là `8.0.4`, hãy downgrade hai packages còn lại xuống `8.0.4` để tránh compatibility warnings.
+
+### Bước 2: Phát triển EF Core DbContext cho Catalog Module
+
+Tạo thư mục `Data` trong Catalog module, sau đó tạo class `CatalogDbContext`:
+
+```csharp
+public class CatalogDbContext : DbContext
+{
+    public CatalogDbContext(DbContextOptions<CatalogDbContext> options) : base(options) { }
+
+    public DbSet<Product> Products => Set<Product>();
+
+    protected override void OnModelCreating(ModelBuilder builder)
+    {
+        builder.HasDefaultSchema("catalog"); // Tạo schema riêng cho catalog module
+        builder.ApplyConfigurationsFromAssembly(Assembly.GetExecutingAssembly());
+        base.OnModelCreating(builder);
+    }
+}
+```
+
+Dòng `builder.HasDefaultSchema("catalog")` quan trọng nhất — nó tạo schema riêng `catalog` trong PostgreSQL database, đảm bảo data isolation giữa các modules.
+
+`ApplyConfigurationsFromAssembly` tự động tìm và áp dụng tất cả các Entity Configuration classes, giúp code gọn hơn so với cấu hình thủ công trong `OnModelCreating`.
+
+### Bước 3: Cấu hình Domain Entities với EF Core Entity Configurations
+
+Tạo thư mục `Data/Configurations`, sau đó tạo `ProductConfiguration`:
+
+```csharp
+public class ProductConfiguration : IEntityTypeConfiguration<Product>
+{
+    public void Configure(EntityTypeBuilder<Product> builder)
+    {
+        builder.HasKey(p => p.Id);
+        builder.Property(p => p.Name).IsRequired().HasMaxLength(50);
+        builder.Property(p => p.Category).IsRequired();
+        builder.Property(p => p.Description).HasMaxLength(200);
+        builder.Property(p => p.ImageFile).HasMaxLength(100);
+        builder.Property(p => p.Price).IsRequired();
+    }
+}
+```
+
+Class này implement interface `IEntityTypeConfiguration<Product>`, và EF Core sẽ tự động tìm thấy nó thông qua `ApplyConfigurationsFromAssembly`.
+
+### Bước 4: Cấu hình Connection String trong appsettings.json
+
+Trong file `appsettings.json` của API project:
+
+```json
+{
+  "ConnectionStrings": {
+    "Database": "Server=localhost;Port=5432;Database=EshopDb;User Id=postgres;Password=postgres;Include Error Detail=true"
+  }
+}
+```
+
+- `Server=localhost` — kết nối từ local computer đến PostgreSQL trong Docker
+- `Port=5432` — port được expose từ Docker container
+- `Database=EshopDb` — tên database (khớp với `POSTGRES_DB` trong docker-compose.override.yml)
+- `Include Error Detail=true` — bao gồm thông tin lỗi chi tiết khi debug
+
+### Bước 5: Đăng ký EF Core DbContext vào Dependency Injection
+
+Trong `CatalogModule.cs`:
+
+```csharp
+public static IServiceCollection AddCatalogModule(this IServiceCollection services, IConfiguration configuration)
+{
+    // Data Infrastructure services
+    var connectionString = configuration.GetConnectionString("Database");
+    services.AddDbContext<CatalogDbContext>(options =>
+        options.UseNpgsql(connectionString));
+
+    return services;
+}
+```
+
+### Bước 6: Tạo EF Core Migrations
+
+Trước khi chạy migration commands:
+1. Set **API** làm startup project (vì đây là nơi có connection string trong appsettings.json)
+2. Cài `Microsoft.EntityFrameworkCore.Design` vào API project (chỉ dùng cho design-time tools)
+3. Đảm bảo version của design package khớp với các EF Core packages khác
+
+Chạy trong Package Manager Console:
+```powershell
+Add-Migration InitialCreate -OutputDir Data/Migrations -Project Catalog -StartupProject API
+```
+
+Command này tạo thư mục `Migrations` với hai files chứa methods `Up()` (tạo schema và tables) và `Down()` (rollback). Với Catalog module, `Up()` sẽ:
+- Tạo schema `catalog` trong PostgreSQL
+- Tạo bảng `Products` với các cột theo cấu hình
+
+```powershell
+Update-Database -Project Catalog -StartupProject API
+```
+
+Command này kết nối PostgreSQL và apply migrations. Bạn có thể xác nhận trong pgAdmin rằng schema `catalog` và bảng `Products` đã được tạo.
+
+### Bước 7: Auto-Migrate khi Application Startup
+
+Thay vì chạy `Update-Database` thủ công mỗi lần deploy, chúng ta tự động hóa bằng code.
+
+**Trong Shared Library** — tạo `Data/Extensions.cs`:
+
+```csharp
+public static class DataExtensions
+{
+    public static IApplicationBuilder UseMigration<TContext>(this IApplicationBuilder app)
+        where TContext : DbContext
+    {
+        MigrateDatabaseAsync<TContext>(app.ApplicationServices).GetAwaiter().GetResult();
+        return app;
+    }
+
+    private static async Task MigrateDatabaseAsync<TContext>(IServiceProvider serviceProvider)
+        where TContext : DbContext
+    {
+        using var scope = serviceProvider.CreateScope();
+        var context = scope.ServiceProvider.GetRequiredService<TContext>();
+        await context.Database.MigrateAsync(); // Chạy Update-Database tự động
+    }
+}
+```
+
+**Trong CatalogModule.cs** — phương thức `UseCatalogModule`:
+
+```csharp
+public static IApplicationBuilder UseCatalogModule(this IApplicationBuilder app)
+{
+    app.UseMigration<CatalogDbContext>(); // Auto-migrate khi startup
+    return app;
+}
+```
+
+Khi API project khởi động, `UseCatalogModule` được gọi → `UseMigration` → `MigrateAsync()` → tự động apply tất cả pending migrations.
+
+### Bước 8: Seed Dữ liệu khi Application Startup
+
+#### Tạo IDataSeeder interface trong Shared Library
+
+```csharp
+// Shared/Data/Seed/IDataSeeder.cs
+public interface IDataSeeder
+{
+    Task SeedAllAsync();
+}
+```
+
+#### Implement IDataSeeder cho Catalog Module
+
+```csharp
+// Catalog/Data/Seed/CatalogDataSeeder.cs
+public class CatalogDataSeeder(CatalogDbContext context) : IDataSeeder
+{
+    public async Task SeedAllAsync()
+    {
+        if (!await context.Products.AnyAsync())
+        {
+            await context.Products.AddRangeAsync(InitialData.Products);
+            await context.SaveChangesAsync();
+        }
+    }
+}
+```
+
+#### Tạo InitialData với các products mẫu
+
+```csharp
+// Catalog/Data/Seed/InitialData.cs
+public static class InitialData
+{
+    public static IEnumerable<Product> Products => new List<Product>
+    {
+        Product.Create(Guid.NewGuid(), "iPhone X", "Electronics", "...", "product1.jpg", 950.00m),
+        Product.Create(Guid.NewGuid(), "Samsung S10", "Electronics", "...", "product2.jpg", 840.00m),
+        Product.Create(Guid.NewGuid(), "Huawei Y Plus", "Electronics", "...", "product3.jpg", 680.00m),
+        Product.Create(Guid.NewGuid(), "Xiaomi", "Electronics", "...", "product4.jpg", 400.00m),
+    };
+}
+```
+
+#### Đăng ký IDataSeeder trong DI và cập nhật UseMigration
+
+Trong `AddCatalogModule`:
+```csharp
+services.AddScoped<IDataSeeder, CatalogDataSeeder>();
+```
+
+Cập nhật `UseMigration` trong Shared Library để gọi seed sau khi migrate:
+
+```csharp
+public static IApplicationBuilder UseMigration<TContext>(this IApplicationBuilder app)
+    where TContext : DbContext
+{
+    MigrateDatabaseAsync<TContext>(app.ApplicationServices).GetAwaiter().GetResult();
+    SeedDataAsync(app.ApplicationServices).GetAwaiter().GetResult();
+    return app;
+}
+
+private static async Task SeedDataAsync(IServiceProvider serviceProvider)
+{
+    using var scope = serviceProvider.CreateScope();
+    var seeders = scope.ServiceProvider.GetServices<IDataSeeder>();
+    foreach (var seeder in seeders)
+        await seeder.SeedAllAsync();
+}
+```
+
+## EF Core Interceptors — SaveChanges Interceptor
+
+### Khái niệm
+
+**Interceptors** trong EF Core cho phép can thiệp, chỉnh sửa hoặc ngăn chặn các EF Core operations. Chúng bao gồm các database operations cấp thấp (executing commands) và các operations cấp cao (calls to `SaveChanges`).
+
+**SaveChanges Interception** cho phép thực thi logic tùy chỉnh khi lưu changes vào database. Use case phổ biến nhất là **Auditing** — ghi lại ai đã thay đổi entity và khi nào.
+
+### Bước 9: Phát triển AuditableEntityInterceptor
+
+Tạo `Data/Interceptors/AuditableEntityInterceptor.cs` trong Shared Library:
+
+```csharp
+public class AuditableEntityInterceptor : SaveChangesInterceptor
+{
+    public override InterceptionResult<int> SavingChanges(
+        DbContextEventData eventData, InterceptionResult<int> result)
+    {
+        UpdateEntities(eventData.Context);
+        return base.SavingChanges(eventData, result);
+    }
+
+    public override ValueTask<InterceptionResult<int>> SavingChangesAsync(
+        DbContextEventData eventData, InterceptionResult<int> result, CancellationToken cancellationToken = default)
+    {
+        UpdateEntities(eventData.Context);
+        return base.SavingChangesAsync(eventData, result, cancellationToken);
+    }
+
+    private void UpdateEntities(DbContext? context)
+    {
+        if (context == null) return;
+
+        foreach (var entry in context.ChangeTracker.Entries<IEntity>())
+        {
+            if (entry.State == EntityState.Added)
+            {
+                entry.Entity.CreatedBy = "mehmet";
+                entry.Entity.CreatedAt = DateTime.UtcNow;
+            }
+
+            if (entry.State == EntityState.Added ||
+                entry.State == EntityState.Modified ||
+                entry.HasChangedOwnedEntities())
+            {
+                entry.Entity.LastModifiedBy = "mehmet";
+                entry.Entity.LastModified = DateTime.UtcNow;
+            }
+        }
+    }
+}
+
+// Extension method để check owned entities
+public static class Extensions
+{
+    public static bool HasChangedOwnedEntities(this EntityEntry entry) =>
+        entry.References.Any(r =>
+            r.TargetEntry != null &&
+            r.TargetEntry.Metadata.IsOwned() &&
+            (r.TargetEntry.State == EntityState.Added || r.TargetEntry.State == EntityState.Modified));
+}
+```
+
+**Lưu ý quan trọng:** Override `SavingChanges` (không phải `SavedChanges`). `SavingChanges` được gọi **trước** khi commit vào database, cho phép chúng ta set các giá trị trước khi lưu. `SavedChanges` được gọi **sau** khi đã commit — quá muộn để set audit fields.
+
+### Đăng ký Interceptor vào DbContext
+
+Trong `AddCatalogModule`:
+
+```csharp
+services.AddScoped<ISaveChangesInterceptor, AuditableEntityInterceptor>();
+services.AddScoped<ISaveChangesInterceptor, DispatchDomainEventsInterceptor>();
+
+services.AddDbContext<CatalogDbContext>((sp, options) =>
+{
+    options.AddInterceptors(sp.GetServices<ISaveChangesInterceptor>());
+    options.UseNpgsql(connectionString);
+});
+```
+
+Dùng `ISaveChangesInterceptor` interface và lấy từ service provider để dễ dàng thêm interceptors mới mà không cần sửa code đăng ký DbContext.
+
+## Dispatch Domain Events với SaveChanges Interceptor
+
+### Domain Events là gì?
+
+**Domain Events** đại diện cho điều gì đó đã xảy ra trong quá khứ mà các phần khác trong cùng service boundary cần phản ứng. Ví dụ, khi một sản phẩm được tạo, `ProductCreatedDomainEvent` được raise, có thể trigger nhiều side effects như cập nhật inventory, gửi email, v.v.
+
+### Các bước Dispatch Domain Events
+
+**Bước 1:** Khi tạo entity (ví dụ `Product.Create()`), add domain event vào aggregate:
+```csharp
+public static Product Create(Guid id, string name, ...)
+{
+    var product = new Product { Id = id, Name = name, ... };
+    product.AddDomainEvent(new ProductCreatedDomainEvent(product));
+    return product;
+}
+```
+
+**Bước 2:** `DispatchDomainEventsInterceptor` can thiệp vào `SavingChanges` và dispatch events trước khi commit:
+
+### Phát triển DispatchDomainEventsInterceptor
+
+```csharp
+public class DispatchDomainEventsInterceptor(IMediator mediator) : SaveChangesInterceptor
+{
+    public override InterceptionResult<int> SavingChanges(
+        DbContextEventData eventData, InterceptionResult<int> result)
+    {
+        DispatchDomainEvents(eventData.Context).GetAwaiter().GetResult();
+        return base.SavingChanges(eventData, result);
+    }
+
+    public override async ValueTask<InterceptionResult<int>> SavingChangesAsync(
+        DbContextEventData eventData, InterceptionResult<int> result, CancellationToken cancellationToken = default)
+    {
+        await DispatchDomainEvents(eventData.Context);
+        return await base.SavingChangesAsync(eventData, result, cancellationToken);
+    }
+
+    private async Task DispatchDomainEvents(DbContext? context)
+    {
+        if (context == null) return;
+
+        // Lấy tất cả aggregates có domain events chưa dispatch
+        var aggregates = context.ChangeTracker
+            .Entries<IAggregate>()
+            .Where(a => a.Entity.DomainEvents.Any())
+            .Select(a => a.Entity);
+
+        var domainEvents = aggregates.SelectMany(a => a.DomainEvents).ToList();
+
+        // Xóa domain events trước khi dispatch (tránh re-dispatch)
+        aggregates.ToList().ForEach(a => a.ClearDomainEvents());
+
+        // Dispatch từng domain event qua MediatR
+        foreach (var domainEvent in domainEvents)
+            await mediator.Publish(domainEvent);
+    }
+}
+```
+
+**Lý do dùng EF Core SaveChanges Interceptor để dispatch domain events:**
+- Hook vào lifecycle của database operations, đặc biệt là sau khi changes được committed thành công
+- Đảm bảo domain events được dispatch đồng bộ với việc lưu data
+
+### Đăng ký DispatchDomainEventsInterceptor
+
+Interceptor cần `IMediator` nên phải đăng ký MediatR trước khi DbContext:
+
+```csharp
+// Đăng ký MediatR trước
+services.AddMediatR(cfg => cfg.RegisterServicesFromAssembly(Assembly.GetExecutingAssembly()));
+
+// Đăng ký interceptors
+services.AddScoped<ISaveChangesInterceptor, AuditableEntityInterceptor>();
+services.AddScoped<ISaveChangesInterceptor, DispatchDomainEventsInterceptor>();
+
+// Đăng ký DbContext với interceptors từ DI container
+services.AddDbContext<CatalogDbContext>((sp, options) =>
+{
+    options.AddInterceptors(sp.GetServices<ISaveChangesInterceptor>());
+    options.UseNpgsql(connectionString);
+});
+```
+
+## Kiểm thử toàn bộ luồng
+
+Luồng hoàn chỉnh khi application startup:
+
+1. `Program.cs` → `app.UseCatalogModule()`
+2. → `UseMigration<CatalogDbContext>()`
+3. → `context.Database.MigrateAsync()` — tự động apply EF Core migrations, tạo schema `catalog` và bảng `Products` trong PostgreSQL
+4. → `SeedDataAsync()` → `CatalogDataSeeder.SeedAllAsync()`
+5. → `context.Products.AddRangeAsync(InitialData.Products)`
+6. → `context.SaveChangesAsync()`
+7. → EF Core gọi `AuditableEntityInterceptor.SavingChangesAsync()` — set `CreatedAt`, `CreatedBy`, `LastModified`, `LastModifiedBy`
+8. → EF Core gọi `DispatchDomainEventsInterceptor.SavingChangesAsync()` — dispatch `ProductCreatedDomainEvent` qua MediatR
+9. → Commit vào PostgreSQL database
+
+Xác nhận trong pgAdmin:
+- Schema `catalog` được tạo
+- Bảng `Products` có dữ liệu với đầy đủ audit fields (`CreatedAt`, `CreatedBy`, v.v.)
+- Các domain events được dispatch thành công (có thể xem trong logs)
+
+## Tóm tắt kiến trúc Data Infrastructure
+
+```
+Shared Library
+├── Data/
+│   ├── Extensions.cs        (UseMigration<TContext> extension method)
+│   ├── Interceptors/
+│   │   ├── AuditableEntityInterceptor.cs
+│   │   └── DispatchDomainEventsInterceptor.cs
+│   └── Seed/
+│       └── IDataSeeder.cs
+
+Catalog Module
+├── Data/
+│   ├── CatalogDbContext.cs
+│   ├── Configurations/
+│   │   └── ProductConfiguration.cs
+│   ├── Migrations/          (auto-generated)
+│   └── Seed/
+│       ├── CatalogDataSeeder.cs
+│       └── InitialData.cs
+```
+
+Cách tiếp cận này đảm bảo:
+- **Data isolation** qua separate schema (`catalog`, `basket`, `ordering`)
+- **Auto migration** khi deploy, không cần chạy commands thủ công
+- **Auditing** tự động qua SaveChanges interceptor
+- **Domain events** được dispatch đúng thời điểm trước khi commit
+- **Reusability** — `UseMigration`, `IDataSeeder`, interceptors đều tái sử dụng được cho mọi module

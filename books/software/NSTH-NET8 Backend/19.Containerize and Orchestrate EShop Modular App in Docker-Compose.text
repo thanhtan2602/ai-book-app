@@ -1,0 +1,178 @@
+## Containerize và Orchestrate EShop Modular Monolith App trong Docker Compose
+
+Trong phần này, chúng ta sẽ containerize và orchestrate từng phần của ứng dụng modular monolith trong môi trường Docker Compose. Chúng ta sẽ tìm hiểu chiến lược triển khai, containerize và orchestrate API project, chạy toàn bộ Docker Compose và test tất cả các API trên Postman, đồng thời bàn về việc phát triển client application.
+
+### Chiến lược triển khai
+
+Chiến lược triển khai của ứng dụng EShop Modular bao gồm hai giai đoạn:
+
+**Deployment 1 – Local Development với Docker Compose:** Phát triển ứng dụng trên máy local và kết nối với các backing services (database, cache, RabbitMQ) từ môi trường Docker Compose.
+
+**Deployment 2 – Full Docker Environment:** Tích hợp toàn bộ ứng dụng và các backing services vào Docker Compose, chạy mọi thứ trong môi trường Docker để mô phỏng môi trường production.
+
+Trong phần này, chúng ta sẽ thực hiện Deployment 2 – tức là thêm ASP.NET Core API project vào Docker Compose.
+
+## Thêm API Project vào Docker Compose
+
+Để thêm API project vào Docker Compose trong Visual Studio, click chuột phải vào API project, chọn **Add Container Orchestrator Support**, chọn **Docker Compose** và target OS là **Linux**. Visual Studio sẽ tự động thêm API project vào file `docker-compose.yml` và `docker-compose.override.yml`.
+
+Sau khi thêm, file `docker-compose.yml` sẽ có thêm mục cho API project, tham chiếu đến Dockerfile trong thư mục Bootstrapper API. Dockerfile này sẽ build project, lấy reference từ các class library Catalog, Basket, Ordering và Shared, rồi publish ra artifact `.dll`.
+
+## Cấu hình Environment Variables
+
+Mở file `docker-compose.override.yml` để cấu hình environment variables cho API project. Nguyên tắc cơ bản là: **tìm tất cả `localhost` trong `appsettings.json` và thay bằng tên container trong Docker Compose**.
+
+Ví dụ:
+- Database server: `localhost` → `db` (tên container PostgreSQL)
+- Redis: `localhost` → `distributed-cache` (tên container Redis)
+- RabbitMQ: `localhost` → `e-commerce-mq` (tên container RabbitMQ)
+- Keycloak: `localhost` → `identity` (tên container Keycloak)
+
+Khi override cấu hình qua environment variables, dùng **double underscore (`__`)** để truy cập các cấp con. Ví dụ:
+
+```yaml
+environment:
+  - ConnectionSettings__Database__Server=db
+  - ConnectionStrings__Redis=distributed-cache
+  - MessageBroker__Host=amqp://e-commerce-mq:5672
+  - Keycloak__AuthServerUrl=http://identity:1990
+```
+
+### Tránh xung đột port với Keycloak
+
+ASP.NET Core API và Keycloak đều mặc định expose port `8080` nội bộ trong Docker network. Để tránh xung đột, cần thay đổi port nội bộ của Keycloak bằng hai environment variables:
+
+```yaml
+- KC_HOSTNAME=http://identity:1990
+- KC_HTTP_PORT=1990
+```
+
+Cập nhật cấu hình port của container Keycloak để expose `1990` thay vì `8080`. API project sẽ kết nối đến Keycloak qua `http://identity:1990`.
+
+### Cấu hình `depends_on`
+
+API project cần khởi động sau khi tất cả backing services đã sẵn sàng:
+
+```yaml
+depends_on:
+  - db
+  - distributed-cache
+  - seq
+  - e-commerce-mq
+  - identity
+```
+
+Port expose ra ngoài cho API là `6060`/`6061`, trong khi nội bộ Docker dùng `8080`/`8081`.
+
+## Test Toàn Bộ với Docker Compose
+
+Khởi động Docker Desktop, click chuột phải vào Docker Compose trong Visual Studio, chọn **Set as Startup Project** và chạy **without debugging**. Docker sẽ build image cho API project và khởi động toàn bộ stack.
+
+Trong Docker Desktop, có thể xem logs của API container và kiểm tra environment variables đã được set đúng chưa.
+
+Trong Postman, chuyển environment từ `localhost` sang `Docker`. Lúc này base URL sẽ đổi thành `http://localhost:6060`.
+
+### Test Catalog Module
+
+Gửi các request lần lượt:
+- `POST /products` – tạo sản phẩm mới → 201 Created
+- `GET /products?pageIndex=0&pageSize=2` – danh sách sản phẩm theo trang
+- `GET /products/{id}` – lấy sản phẩm theo ID
+- `GET /products/category/{category}` – lấy sản phẩm theo danh mục
+- `PUT /products/{id}` – cập nhật giá → 200 OK, kích hoạt asynchronous communication
+- `DELETE /products/{id}` – xóa sản phẩm
+
+Sau khi gửi request cập nhật giá, mở RabbitMQ Management Dashboard để xác nhận event đã được publish và consume bởi Basket module.
+
+## Test Basket Module
+
+Basket module tích hợp với Redis cho distributed caching, và giao tiếp đồng bộ với Catalog module qua Mediator.
+
+Tất cả các endpoint của Basket đều yêu cầu Bearer Token từ Keycloak. Quy trình:
+
+1. Lấy access token: `POST` đến identity server
+2. Copy token vào Authorization Bearer Token trong Postman
+3. Gọi các endpoint:
+   - `POST /basket` – tạo shopping cart mới
+   - `GET /basket/{username}` – lấy giỏ hàng
+   - `POST /basket/{username}/items` – thêm item (gọi đồng bộ đến Catalog để lấy giá)
+   - `DELETE /basket/{username}/items/{productId}` – xóa item khỏi giỏ
+   - `DELETE /basket/{username}` – xóa toàn bộ giỏ hàng
+
+Lưu ý: Access token có thời hạn. Nếu nhận được `401 Unauthorized`, cần lấy token mới từ identity server.
+
+## Test Basket Checkout và Ordering (Asynchronous Communication)
+
+Luồng checkout basket sử dụng Outbox Pattern:
+
+1. Client gửi `POST /basket/checkout` với payload chứa thông tin thanh toán
+2. Basket handler lưu record vào bảng Outbox và xóa basket trong cùng một transaction
+3. Outbox processor xử lý message và publish event `BasketCheckout` lên RabbitMQ
+4. Ordering module subscribe và consume event, tạo order mới thông qua MediatR
+
+```
+Client → POST /basket/checkout
+       → Basket Module (save outbox + delete basket)
+       → Outbox Processor
+       → RabbitMQ
+       → Ordering Module (create order)
+```
+
+Để xác nhận, mở RabbitMQ Dashboard và kiểm tra queue. Sau đó gọi `GET /orders` trong Ordering module để thấy order mới được tạo.
+
+### Test Ordering Module
+
+- `GET /orders?pageIndex=0&pageSize=10` – danh sách orders
+- `GET /orders/{id}` – lấy order theo ID
+- `DELETE /orders/{id}` – xóa order
+- `POST /orders` – tạo order thủ công
+
+## Client Applications
+
+Ứng dụng Modular Monolith này có thể được consume bởi nhiều loại client application:
+
+- **Single Page Applications**: React, Angular, Blazor
+- **Traditional Web App**: ASP.NET Core Razor Pages với Refit HTTP Client Factory
+
+### Ví dụ với Razor Pages + Refit
+
+Refit cho phép định nghĩa API endpoints qua interfaces với annotations:
+
+```csharp
+public interface ICatalogService
+{
+    [Get("/products")]
+    Task<List<Product>> GetProducts();
+
+    [Get("/products/{id}")]
+    Task<Product> GetProductById(Guid id);
+}
+
+public interface IBasketService
+{
+    [Get("/basket/{username}")]
+    Task<ShoppingCart> GetBasket(string username);
+
+    [Post("/basket")]
+    Task<ShoppingCart> CreateBasket([Body] ShoppingCart cart);
+
+    [Post("/basket/checkout")]
+    Task Checkout([Body] BasketCheckout checkout);
+}
+```
+
+Đăng ký Refit client trong `Program.cs`:
+
+```csharp
+builder.Services.AddRefitClient<ICatalogService>()
+    .ConfigureHttpClient(c => c.BaseAddress = new Uri(builder.Configuration["ApiSettings:GatewayAddress"]));
+
+builder.Services.AddRefitClient<IBasketService>()
+    .ConfigureHttpClient(c => c.BaseAddress = new Uri(builder.Configuration["ApiSettings:GatewayAddress"]));
+```
+
+Trong `appsettings.json`, base address trỏ đến API project của modular monolith (ví dụ: `http://localhost:6060`).
+
+Với cách tiếp cận này, client application được tách biệt hoàn toàn khỏi business logic, xử lý lỗi được tập trung, và authentication với Keycloak được thực hiện đúng cách thông qua cơ chế Bearer Token.
+
+Khóa học này tập trung vào .NET backend, vì vậy chúng ta sẽ không phát triển chi tiết client application. Tuy nhiên, hiểu cách consume API từ phía client là kiến thức quan trọng để xây dựng ứng dụng modular monolith hoàn chỉnh.

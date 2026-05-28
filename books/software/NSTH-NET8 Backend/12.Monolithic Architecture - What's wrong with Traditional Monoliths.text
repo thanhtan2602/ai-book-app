@@ -1,0 +1,105 @@
+## Kiến Trúc Nguyên Khối (Monolithic Architecture) — Vấn Đề Của Các Hệ Thống Truyền Thống
+
+### Big Ball of Mud
+
+Trong chương này, chúng ta sẽ khám phá khái niệm "Big Ball of Mud" — thuật ngữ dùng để chỉ một hệ thống phần mềm có kiến trúc lộn xộn và thiếu tổ chức. Đây là loại hệ thống mà code bị rối rắm đến mức khó hiểu, khó bảo trì và gần như không thể mở rộng.
+
+Một "Big Ball of Mud" không có cấu trúc hay tổ chức rõ ràng. Mọi thứ đều trộn lẫn với nhau, khiến người đọc code không thể phân biệt được ranh giới giữa các phần. Theo thời gian, những bản vá nhanh và những lối tắt tích lũy dần, tạo ra "nợ kỹ thuật" (technical debt) — khiến code ngày càng khó làm việc hơn.
+
+Có nhiều nguyên nhân dẫn đến tình trạng này:
+
+- **Chu kỳ phát triển nhanh**: Khi phải chạy deadline gấp, các best practice thường bị bỏ qua, dẫn đến codebase đầy những lối tắt.
+- **Thiếu thiết kế hệ thống**: Không có quy hoạch rõ ràng, hệ thống phát triển theo kiểu ngẫu hứng, các quyết định thiết kế được đưa ra tùy tiện dẫn đến sự không nhất quán.
+- **Thiếu refactoring định kỳ**: Code cần được làm sạch và cải thiện theo thời gian. Nếu việc này không được thực hiện đều đặn, codebase sẽ trở nên ngày càng khó quản lý.
+
+Trong phần này, chúng ta sẽ tìm hiểu về kiến trúc nguyên khối truyền thống và những vấn đề của nó.
+
+---
+
+## Kiến Trúc Nguyên Khối Là Gì?
+
+Monolithic Architecture là cách xây dựng ứng dụng theo kiểu truyền thống. Trong một ứng dụng monolithic, tất cả các thành phần và chức năng được đóng gói thành một đơn vị duy nhất. Điều này có nghĩa là giao diện người dùng (UI), logic nghiệp vụ (business logic) và lớp truy cập dữ liệu (data access layer) đều nằm trong một ứng dụng duy nhất.
+
+Khi bạn đóng gói tất cả mọi thứ lại và deploy lên server, đó chính là kiến trúc nguyên khối — nơi các service được kết nối chặt chẽ (tightly coupled) với nhau. Hầu hết các ứng dụng legacy (cũ) đều được triển khai theo kiến trúc này.
+
+Trong mô hình monolithic, tất cả các khía cạnh của ứng dụng đều nằm trong một gói deploy duy nhất. Dù có thể thiết kế theo nhiều lớp như presentation, business và data layer, toàn bộ codebase vẫn được đóng gói và deploy thành một file JAR hoặc WAR duy nhất.
+
+Phát triển ứng dụng theo kiến trúc nguyên khối đôi khi vẫn là lựa chọn tốt nhất, đặc biệt khi yêu cầu tính nhất quán cao (strong consistency).
+
+---
+
+### Đặc Điểm Của Kiến Trúc Nguyên Khối
+
+**1. Codebase đơn nhất (Single Codebase)**
+
+Tất cả code nằm trong một codebase duy nhất, giúp dễ quản lý và deploy ban đầu. Tuy nhiên, không có sự tách biệt giữa các phần, dẫn đến tightly coupling.
+
+**2. Đơn vị deploy duy nhất (Single Deployment Unit)**
+
+Toàn bộ ứng dụng được đóng gói và deploy như một đơn vị. Điều này đơn giản hóa quá trình deploy, đặc biệt trong giai đoạn đầu phát triển.
+
+**3. Tight Coupling**
+
+Các thành phần bên trong ứng dụng kết nối chặt chẽ với nhau. Thay đổi ở một phần có thể ảnh hưởng đến các phần khác, làm tăng độ phức tạp.
+
+**4. Cơ sở dữ liệu dùng chung (Shared Database)**
+
+Thông thường, một ứng dụng monolithic dùng một cơ sở dữ liệu chung cho tất cả nhu cầu dữ liệu, gây khó khăn trong việc mở rộng khi ứng dụng phát triển.
+
+---
+
+## Vấn Đề Của Kiến Trúc Nguyên Khối Truyền Thống
+
+Mặc dù ứng dụng monolithic có vẻ đơn giản, nhưng chúng gây ra nhiều vấn đề nghiêm trọng khi hệ thống phát triển lên quy mô lớn.
+
+### Vấn Đề Khả Năng Mở Rộng (Scalability)
+
+Trong kiến trúc nguyên khối, toàn bộ ứng dụng là một đơn vị duy nhất. Khi một phần cần scale, bạn phải scale toàn bộ ứng dụng — không thể scale riêng lẻ từng thành phần. Ví dụ, nếu module xác thực người dùng chịu tải cao, bạn không thể chỉ scale riêng module đó mà phải scale toàn bộ hệ thống, dẫn đến lãng phí tài nguyên.
+
+### Vấn Đề Development Bottlenecks
+
+Khi ứng dụng phát triển, quá trình phát triển có thể chậm lại do các bottleneck:
+
+- **Codebase quá lớn**: Codebase trở nên quá lớn và phức tạp đến mức khó quản lý. Thậm chí có thể xảy ra tình trạng không ai trong team hiểu hết toàn bộ hệ thống.
+- **Tight coupling**: Các thay đổi ở một phần có thể gây ra những hậu quả không lường trước ở các phần khác. Với hệ thống tight coupling mạnh, bất kỳ thay đổi code nào cũng ảnh hưởng đến toàn bộ hệ thống.
+- **Sợ thay đổi (Fear of Change)**: Sự phức tạp này khiến developer e ngại khi thực hiện thay đổi, vì mỗi thay đổi có thể kéo theo những side effect tốn kém. Quá trình phát triển tính năng mới trở nên mất thời gian và đắt đỏ.
+
+Ngay cả thay đổi nhỏ nhất cũng yêu cầu deploy lại toàn bộ ứng dụng — vừa tốn kém vừa rủi ro. Một bug duy nhất có thể làm sập toàn bộ hệ thống.
+
+### Rủi Ro Khi Deploy
+
+**Single Point of Failure**: Vì toàn bộ ứng dụng được deploy như một đơn vị, bất kỳ sự cố nào trong quá trình deploy đều có thể làm sập toàn bộ hệ thống. Không có sự cô lập giữa các thành phần.
+
+**Khó Rollback**: Nếu deploy thất bại, bạn phải rollback toàn bộ ứng dụng — đây là một quá trình phức tạp và rủi ro.
+
+**Downtime thường xuyên**: Việc cập nhật ứng dụng monolithic thường đòi hỏi downtime, ảnh hưởng đến trải nghiệm người dùng, đặc biệt khi cập nhật diễn ra thường xuyên.
+
+---
+
+### Technology Lock-In (Bị Khóa Vào Công Nghệ)
+
+Kiến trúc nguyên khối truyền thống hạn chế nghiêm trọng khả năng áp dụng công nghệ mới. Khi tất cả các thành phần được tích hợp chặt chẽ, rất khó để áp dụng một công nghệ mới cho một module cụ thể mà không ảnh hưởng đến toàn bộ ứng dụng.
+
+Ví dụ, nếu muốn dùng một loại cơ sở dữ liệu khác cho một thành phần cụ thể, bạn sẽ phải thay đổi toàn bộ ứng dụng vì các phụ thuộc chằng chịt. Bất kỳ thay đổi nào về framework hay ngôn ngữ đều ảnh hưởng đến toàn bộ ứng dụng, làm cho việc thay đổi tốn kém và mất thời gian.
+
+Tình trạng này thường được gọi là **vòng tròn sợ hãi (Fear Cycle)**: nếu bạn đã phát triển cùng một ứng dụng monolithic trong thời gian dài, việc thay đổi toàn bộ codebase sang công nghệ mới là điều cực kỳ căng thẳng. Thay vì xây dựng các giải pháp mới và sáng tạo, phần lớn thời gian của bạn bị tiêu tốn vào việc duy trì ứng dụng legacy.
+
+Phản ứng với các yêu cầu nghiệp vụ mới hoặc thay đổi thị trường cũng trở nên chậm chạp. Bất kỳ thay đổi đáng kể nào cũng đòi hỏi kiểm thử kỹ lưỡng và phối hợp trên toàn bộ ứng dụng.
+
+---
+
+### Thách Thức Bảo Trì (Maintenance Challenges)
+
+**Nợ kỹ thuật (Technical Debt)**: Khi ứng dụng phát triển, nợ kỹ thuật tích lũy dần — bao gồm code lỗi thời, tài liệu kém chất lượng và những bản vá nhanh làm giảm chất lượng code.
+
+**Sửa lỗi và thêm tính năng**: Việc sửa bug và thêm tính năng mới ngày càng phức tạp. Nguy cơ tạo ra bug mới trong khi sửa bug cũ đòi hỏi kiểm thử toàn diện.
+
+**Phối hợp nhóm (Team Coordination)**: Phối hợp một đội lớn cùng làm việc trên một codebase duy nhất rất khó khăn. Việc merge code từ nhiều developer khác nhau có thể dẫn đến xung đột và chậm trễ.
+
+---
+
+### Tổng Kết
+
+Kiến trúc nguyên khối truyền thống mang lại sự đơn giản trong giai đoạn đầu phát triển, nhưng theo thời gian nó trở thành gánh nặng lớn. Các vấn đề về khả năng mở rộng, technology lock-in, development bottleneck, rủi ro deploy và thách thức bảo trì làm cho hệ thống ngày càng khó phát triển và thích ứng với nhu cầu mới.
+
+Đây chính là lý do tại sao các kiến trúc hiện đại như Modular Monolith và Microservices ra đời — để giải quyết những hạn chế cố hữu của kiến trúc nguyên khối truyền thống trong khi vẫn tận dụng những ưu điểm của nó.

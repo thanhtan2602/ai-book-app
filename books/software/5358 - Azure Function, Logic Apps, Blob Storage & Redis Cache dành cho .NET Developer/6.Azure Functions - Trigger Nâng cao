@@ -1,0 +1,293 @@
+## Tổng quan luồng nâng cao
+
+Trong phần này, chúng ta sẽ mở rộng ứng dụng với các trigger phức tạp hơn:
+
+1. **HTTP Trigger:** Nhận SalesRequest từ web app → ghi Queue
+2. **Queue Trigger:** Lấy từ Queue → lưu vào database
+3. **Blob Trigger:** Khi ảnh được upload → resize ảnh → lưu vào container mới
+4. **Blob Trigger thứ 2:** Khi ảnh đã resize → cập nhật status trong database
+5. **Timer Trigger:** Mỗi phút kiểm tra → cập nhật status `ImageProcessed` → `Completed`
+
+## Cấu hình BlobServiceClient trong Web Project
+
+Cài NuGet package `Azure.Storage.Blobs` và thêm connection string vào `appsettings.json`:
+
+```json
+{
+  "StorageConnection": "DefaultEndpointsProtocol=https;AccountName=...;..."
+}
+```
+
+Đăng ký `BlobServiceClient` trong `Program.cs`:
+
+```csharp
+builder.Services.AddSingleton(new BlobServiceClient(
+    builder.Configuration.GetValue<string>("StorageConnection")
+));
+```
+
+## Upload File lên Azure Blob Storage từ Web App
+
+Trong `HomeController`, inject `BlobServiceClient` và xử lý file upload:
+
+```csharp
+if (file != null)
+{
+    var fileName = file.FileName;
+    var extension = Path.GetExtension(fileName);
+    var newFileName = salesRequest.Id + extension;
+    
+    var containerClient = _blobServiceClient
+        .GetBlobContainerClient("function-sales-rep");
+    var blobClient = containerClient.GetBlobClient(newFileName);
+    var headers = new BlobHttpHeaders { ContentType = file.ContentType };
+    
+    await blobClient.UploadAsync(file.OpenReadStream(), headers);
+}
+```
+
+## Blob Trigger - Resize Ảnh khi Upload
+
+Thêm NuGet package:
+```
+Microsoft.Azure.Functions.Worker.Extensions.Storage.Blobs
+SixLabors.ImageSharp
+```
+
+Tạo function mới `ResizeImageOnBlobUpload`:
+
+```csharp
+public class ResizeImageOnBlobUpload
+{
+    [Function("ResizeImageOnBlobUpload")]
+    [BlobOutput("function-sales-rep-final/{name}",
+        Connection = "AzureWebJobsStorage")]
+    public async Task<byte[]> Run(
+        [BlobTrigger("function-sales-rep/{name}",
+            Connection = "AzureWebJobsStorage")] byte[] myBlobByte,
+        string name,
+        ILogger logger)
+    {
+        logger.LogInformation($"Processing blob: {name}");
+        
+        using var inputStream = new MemoryStream(myBlobByte);
+        using var image = Image.Load(inputStream);
+        
+        image.Mutate(x => x.Resize(100, 100));
+        
+        using var outputStream = new MemoryStream();
+        await image.SaveAsJpegAsync(outputStream);
+        outputStream.Position = 0;
+        
+        return outputStream.ToArray();
+    }
+}
+```
+
+**Cách hoạt động:**
+- `[BlobTrigger]`: Kích hoạt khi file được upload vào container `function-sales-rep`
+- `[BlobOutput]`: Lưu kết quả vào container `function-sales-rep-final` với cùng tên file
+- Dùng ImageSharp để resize ảnh xuống 100x100 pixels
+- Trả về byte array, Azure tự động lưu vào blob output
+
+## Blob Trigger - Cập nhật Status sau khi Resize
+
+Tạo function `BlobResizeUpdateDbStatus` lắng nghe container `function-sales-rep-final`:
+
+```csharp
+public class BlobResizeUpdateDbStatus
+{
+    private readonly ApplicationDbContext _dbContext;
+    
+    [Function("BlobResizeUpdateDbStatus")]
+    public async Task Run(
+        [BlobTrigger("function-sales-rep-final/{name}",
+            Connection = "AzureWebJobsStorage")] byte[] myBlob,
+        string name)
+    {
+        var fileName = Path.GetFileNameWithoutExtension(name);
+        var salesRequest = await _dbContext.SalesRequests
+            .FirstOrDefaultAsync(u => u.Id == fileName);
+        
+        if (salesRequest != null)
+        {
+            salesRequest.Status = "ImageProcessed";
+            await _dbContext.SaveChangesAsync();
+        }
+    }
+}
+```
+
+## Timer Trigger và CRON Expression
+
+### Cú pháp CRON Expression
+
+CRON expression trong Azure Function có **6 thành phần** (khác với CRON thông thường có 5):
+
+```
+{giây} {phút} {giờ} {ngày} {tháng} {ngày trong tuần}
+```
+
+Ví dụ:
+- `0 */5 * * * *` - Mỗi 5 phút
+- `0 0 9 * * 1-5` - 9 giờ sáng thứ Hai đến thứ Sáu
+- `0 */1 * * * *` - Mỗi 1 phút
+
+### Tạo Timer Trigger Function
+
+```csharp
+public class UpdateStatusToComplete
+{
+    private readonly ApplicationDbContext _dbContext;
+    
+    [Function("UpdateStatusToComplete")]
+    public async Task Run(
+        [TimerTrigger("0 */5 * * * *")] TimerInfo timerInfo)
+    {
+        var salesRequests = await _dbContext.SalesRequests
+            .Where(u => u.Status == "ImageProcessed")
+            .ToListAsync();
+        
+        foreach (var request in salesRequests)
+        {
+            request.Status = "Completed";
+        }
+        
+        await _dbContext.SaveChangesAsync();
+    }
+}
+```
+
+Timer trigger hoạt động mà không cần bất kỳ trigger nào từ bên ngoài - nó tự động chạy theo lịch đã định.
+
+## CRUD API với Azure Function
+
+Azure Function cũng có thể đóng vai trò như một RESTful API. Tạo `GroceryApi` function:
+
+```csharp
+public class GroceryApi
+{
+    private readonly ApplicationDbContext _dbContext;
+    
+    // GET /api/grocery-list
+    [Function("GetGrocery")]
+    public async Task<IActionResult> GetGrocery(
+        [HttpTrigger(AuthorizationLevel.Function, "get",
+            Route = "grocery-list")] HttpRequest req)
+    {
+        var groceries = await _dbContext.GroceryItems.ToListAsync();
+        return new OkObjectResult(groceries);
+    }
+    
+    // POST /api/grocery-list
+    [Function("CreateGrocery")]
+    public async Task<IActionResult> CreateGrocery(
+        [HttpTrigger(AuthorizationLevel.Function, "post",
+            Route = "grocery-list")] HttpRequest req)
+    {
+        string body = await new StreamReader(req.Body).ReadToEndAsync();
+        var data = JsonConvert.DeserializeObject<GroceryItemUpsert>(body);
+        
+        var item = new GroceryItem
+        {
+            Id = Guid.NewGuid().ToString(),
+            Name = data.Name,
+            CreatedDate = DateTime.Now
+        };
+        
+        _dbContext.GroceryItems.Add(item);
+        await _dbContext.SaveChangesAsync();
+        
+        return new OkObjectResult(item);
+    }
+    
+    // PUT /api/grocery-list/{id}
+    [Function("UpdateGrocery")]
+    public async Task<IActionResult> UpdateGrocery(
+        [HttpTrigger(AuthorizationLevel.Function, "put",
+            Route = "grocery-list/{id}")] HttpRequest req,
+        string id)
+    {
+        var item = _dbContext.GroceryItems
+            .FirstOrDefault(u => u.Id == id);
+        if (item == null)
+            return new NotFoundObjectResult("Item not found");
+        
+        string body = await new StreamReader(req.Body).ReadToEndAsync();
+        var data = JsonConvert.DeserializeObject<GroceryItemUpsert>(body);
+        
+        if (!string.IsNullOrEmpty(data?.Name))
+            item.Name = data.Name;
+        
+        await _dbContext.SaveChangesAsync();
+        return new OkObjectResult(item);
+    }
+    
+    // DELETE /api/grocery-list/{id}
+    [Function("DeleteGrocery")]
+    public async Task<IActionResult> DeleteGrocery(
+        [HttpTrigger(AuthorizationLevel.Function, "delete",
+            Route = "grocery-list/{id}")] HttpRequest req,
+        string id)
+    {
+        var item = _dbContext.GroceryItems
+            .FirstOrDefault(u => u.Id == id);
+        if (item == null)
+            return new NotFoundObjectResult("Item not found");
+        
+        _dbContext.GroceryItems.Remove(item);
+        await _dbContext.SaveChangesAsync();
+        return new OkObjectResult(null);
+    }
+}
+```
+
+## Deploy Azure Function lên Azure
+
+### Chuẩn bị
+
+Cập nhật connection string trong `local.settings.json` để dùng Azure SQL thay vì local SQL.
+
+### Triển khai từ Visual Studio
+
+1. Click chuột phải vào Function App project → **Publish**
+2. Chọn **Azure** → **Azure Function App (Windows)**
+3. Tạo Function App mới trên Azure:
+   - Đặt tên: `TangyAzureFunction`
+   - Resource Group: `AzureFundamentals`
+   - Plan Type: **Consumption**
+   - Operating System: Windows
+   - Location: East US
+   - Storage Account: Chọn existing storage account
+   - Application Insights: Tạo mới để monitor
+4. Click **Create** rồi **Finish**
+5. Click **Publish**
+
+### Cấu hình Environment Variables trên Azure
+
+Sau khi deploy, vào Function App trên Portal → **Environment Variables** và thêm các settings tương tự trong `local.settings.json`:
+
+- `AzureSqlDatabase` - Connection string Azure SQL
+- `AzureWebJobsStorage` - Storage connection string
+
+### Authentication với Function Key
+
+Khi deploy với `AuthorizationLevel.Function`, bạn cần truyền API key trong request.
+
+Để dùng cùng một key cho tất cả functions trong app, dùng **Master Key**:
+
+```csharp
+var masterKey = "?code=<master-key>";
+var url = $"/api/grocery-list{masterKey}";
+```
+
+Lấy Master Key từ Function App → Functions → chọn function → **Code + Test** → **Function Keys**.
+
+### Kiểm tra hoạt động
+
+Sau khi cấu hình xong, tất cả Azure Functions sẽ hoạt động trên cloud:
+- Timer Trigger tự động chạy mỗi phút
+- HTTP Trigger respond qua URL Azure
+- Blob và Queue Trigger phản ứng với storage events
+
+Application Insights giúp bạn theo dõi số lần thực thi, lỗi và hiệu suất của từng function.

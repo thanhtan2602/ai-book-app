@@ -1,0 +1,186 @@
+## Caching là gì và tại sao cần nó?
+
+Trong một ứng dụng thông thường, mỗi khi người dùng yêu cầu dữ liệu, ứng dụng phải truy vấn database. Điều này hoàn toàn bình thường, nhưng không phải lúc nào cũng tối ưu vì mỗi lần đọc từ database đều tốn thời gian - được gọi là "expense" (chi phí). Database calls đặc biệt tốn kém khi phải join nhiều bảng để lấy dữ liệu cần thiết.
+
+**Caching** giải quyết vấn đề này: Khi dữ liệu không thay đổi thường xuyên, thay vì lấy từ database mỗi lần, chúng ta lấy một lần rồi lưu vào cache để tái sử dụng.
+
+### Luồng hoạt động của Caching
+
+1. **Request đầu tiên:** Kiểm tra cache → Cache trống → Lấy từ database → Lưu vào cache → Trả về cho user
+2. **Request tiếp theo:** Kiểm tra cache → Cache có dữ liệu → Trả về từ cache (không cần đến database)
+
+Caching lưu dữ liệu trong bộ nhớ (memory) dưới dạng key-value pair. Dữ liệu phức tạp cần được serialize và deserialize khi lưu/lấy.
+
+### Những điều cần lưu ý khi dùng Cache
+
+- **Không cache dữ liệu nhạy cảm thời gian:** Giá cổ phiếu, điểm số live của trận đấu...
+- **Cache dữ liệu ít thay đổi:** Danh sách danh mục, cấu hình hệ thống...
+- **Thiết lập Invalidation Policy:** Xác định khi nào cache hết hạn
+- **Cân bằng thời gian cache:** Quá ngắn (ví dụ 1 phút) thì lợi ích tối thiểu; quá dài thì user thấy dữ liệu cũ
+
+## Lợi ích của Azure Cache for Redis
+
+Azure Cache for Redis là dịch vụ caching in-memory hiệu suất cao dựa trên Redis mã nguồn mở:
+
+- **Tốc độ cao:** Read/write trung bình dưới 1 millisecond
+- **Được quản lý hoàn toàn:** Microsoft lo về bảo mật, availability và maintenance
+- **Bảo mật enterprise:** Tiêu chuẩn bảo mật cao nhất của Azure
+- **Geo-replication:** Sao lưu dữ liệu cache qua các vùng địa lý
+- **Tích hợp tốt:** Nếu ứng dụng đã chạy trên Azure, Redis Cache tích hợp tự nhiên
+
+## Tạo Azure Cache for Redis trên Portal
+
+1. Tìm **Azure Cache for Redis** trong Portal
+2. Nhấn **Create**
+3. Cấu hình:
+   - **DNS name:** `dotnet-mastery.redis.cache.windows.net`
+   - **Location:** Gần nơi host ứng dụng
+   - **Cache type:** C0 Basic (250MB) - chi phí thấp nhất cho learning
+   - **Redis version:** 6
+4. Nhấn **Review + Create** và **Create**
+
+## Tích hợp Redis Cache vào ứng dụng .NET
+
+### Lấy Connection String
+
+Trong Azure Redis Cache → **Settings → Keys** → Copy **Connection String** (Primary).
+
+### Cấu hình trong appsettings.json
+
+```json
+{
+  "ConnectionStrings": {
+    "DefaultConnection": "Server=...;Database=RedisCache;...",
+    "AzureRedisConnection": "dotnet-mastery.redis.cache.windows.net:6380,password=...,ssl=True,abortConnect=False"
+  }
+}
+```
+
+### Cài NuGet Package
+
+```
+Microsoft.Extensions.Caching.StackExchangeRedis
+```
+
+### Cấu hình trong Program.cs
+
+```csharp
+builder.Services.AddStackExchangeRedisCache(options =>
+{
+    options.Configuration = builder.Configuration
+        .GetConnectionString("AzureRedisConnection");
+});
+```
+
+## Sử dụng Cache trong Controller
+
+Inject `IDistributedCache` vào controller:
+
+```csharp
+public class HomeController : Controller
+{
+    private readonly ApplicationDbContext _db;
+    private readonly IDistributedCache _cache;
+    
+    public HomeController(ApplicationDbContext db, IDistributedCache cache)
+    {
+        _db = db;
+        _cache = cache;
+    }
+    
+    public async Task<IActionResult> Index()
+    {
+        // Kiểm tra cache trước
+        var cachedCategory = _cache.GetString("category_list");
+        List<Category> categoryList;
+        
+        if (!string.IsNullOrEmpty(cachedCategory))
+        {
+            // Lấy từ cache
+            categoryList = JsonConvert.DeserializeObject<List<Category>>(cachedCategory);
+        }
+        else
+        {
+            // Lấy từ database và lưu vào cache
+            categoryList = _db.Category.ToList();
+            _cache.SetString("category_list", JsonConvert.SerializeObject(categoryList));
+        }
+        
+        return View(categoryList);
+    }
+}
+```
+
+## Cache Expiration (Thời gian hết hạn)
+
+### Absolute Expiration
+
+Cache hết hạn sau một khoảng thời gian cố định kể từ khi set, bất kể có được truy cập hay không:
+
+```csharp
+var options = new DistributedCacheEntryOptions
+{
+    AbsoluteExpirationRelativeToNow = TimeSpan.FromMinutes(60) // Hết hạn sau 60 phút
+};
+_cache.SetString("category_list", JsonConvert.SerializeObject(categoryList), options);
+```
+
+### Sliding Expiration
+
+Cache hết hạn nếu không được truy cập trong khoảng thời gian xác định. Mỗi lần truy cập sẽ reset đồng hồ:
+
+```csharp
+var options = new DistributedCacheEntryOptions
+{
+    SlidingExpiration = TimeSpan.FromHours(24) // Hết hạn nếu không dùng trong 24 giờ
+};
+```
+
+### Kết hợp cả hai
+
+Bạn có thể kết hợp để có kiểm soát tốt hơn:
+```csharp
+var options = new DistributedCacheEntryOptions
+{
+    SlidingExpiration = TimeSpan.FromMinutes(30),
+    AbsoluteExpirationRelativeToNow = TimeSpan.FromHours(2)
+};
+```
+
+## Xóa Cache
+
+### Xóa qua Console trong Azure Portal
+
+Vào **Azure Cache for Redis → Console** và chạy lệnh:
+```
+FLUSHALL
+```
+Lệnh này xóa toàn bộ cache.
+
+### Xóa một key cụ thể trong code
+
+```csharp
+_cache.Remove("category_list");
+```
+
+## Demo Cache trong thực tế
+
+1. Load trang lần đầu → Dữ liệu lấy từ database → Lưu vào cache
+2. Tạo category mới trong trang Category
+3. Quay lại trang Home (dùng cache) → Category mới **không** xuất hiện
+4. Đợi cache hết hạn (30 giây theo cấu hình demo) → Refresh trang
+5. Cache được làm mới → Category mới **xuất hiện**
+
+Đây chính xác là hành vi mong đợi: Cache bảo vệ database khỏi các request lặp lại, nhưng sẽ được làm mới khi hết hạn.
+
+## Cấu hình nâng cao của Azure Redis Cache
+
+Trong Azure Portal, các tính năng nâng cao:
+
+- **Scaling:** Nâng cấp tier khi cần thêm dung lượng hoặc kết nối
+- **Clustering:** Phân tán dữ liệu cache (chỉ có ở Premium tier)
+- **Geo-replication:** Sao lưu cache qua nhiều vùng địa lý
+- **Firewall:** Chỉ cho phép IP address cụ thể kết nối
+- **Port cấu hình:** Có thể thay đổi trong Advanced Settings
+
+Với Azure Cache for Redis, bạn đã nắm được toàn bộ vòng đời của caching: set cache, get cache và invalidate cache khi cần thiết.

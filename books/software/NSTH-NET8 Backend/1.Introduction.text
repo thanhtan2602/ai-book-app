@@ -1,0 +1,193 @@
+Xin chào, tôi là Mehmet Özkaya và chào mừng bạn đến với khóa học DotNet Backend Bootcamp, bao gồm Kiến trúc Modular, Vertical Slice Architecture, Domain Driven Design và Outbox Pattern. Tôi là một kiến trúc sư phần mềm, hiện đang tập trung vào các kiến trúc modular monolith trên nền tảng .NET và việc triển khai chúng.
+
+Trong khóa học này, chúng ta sẽ học về modular monolith trên nền tảng .NET, sử dụng ASP.Net Web API, PostgreSQL, Redis, RabbitMQ, Keycloak stack, Docker, MassTransit, Entity Framework Core, Mediator, Carter, Domain Driven Design, Vertical Slice Architecture và Outbox Pattern.
+
+## Tại sao chọn Modular Monolith?
+
+Trong những ngày đầu của phát triển phần mềm, kiến trúc monolithic là tiêu chuẩn cho tất cả các thành phần của ứng dụng — từ giao diện người dùng đến xử lý và quản lý dữ liệu — tất cả đều được đóng gói trong một đơn vị duy nhất không thể tách rời, giúp đơn giản hóa việc phát triển và triển khai ban đầu vì mọi thứ đều được tập trung.
+
+Tuy nhiên, khi ứng dụng ngày càng lớn và phức tạp, những thách thức cũng nhân lên. Việc cập nhật một phần của hệ thống thường đòi hỏi phải triển khai lại toàn bộ ứng dụng, gây ra rủi ro và downtime. Mở rộng quy mô trở nên kém hiệu quả vì phải scale toàn bộ ứng dụng, ngay cả khi chỉ một phần cần được scale.
+
+Trước những hạn chế của kiến trúc monolithic, kiến trúc microservices nổi lên như một sự thay đổi mô hình, đặc biệt dành cho các ứng dụng doanh nghiệp quy mô lớn. Cách tiếp cận này phân rã ứng dụng thành các service nhỏ, có thể triển khai độc lập, mỗi service chạy trong process riêng và giao tiếp qua cơ chế nhẹ như HTTP API.
+
+Kiến trúc microservices mang lại khả năng mở rộng, tính linh hoạt và khả năng phục hồi tốt hơn, giúp dễ dàng cập nhật và scale từng phần của ứng dụng một cách độc lập mà không ảnh hưởng đến toàn bộ hệ thống. Tuy nhiên, bất chấp những ưu điểm đó, cách tiếp cận microservices lại tạo ra những thách thức riêng. Bản chất phân tán của microservices dẫn đến sự phức tạp trong việc quản lý độ trễ mạng, tính nhất quán dữ liệu và khả năng chịu lỗi.
+
+Khi ngành công nghiệp tiếp tục vật lộn với sự đánh đổi giữa kiến trúc monolithic và microservices, một con đường trung gian đã bắt đầu được ưa chuộng — đó là **Modular Monolith Architecture** (hay còn gọi là Modulith). Đây chính là cầu nối giữa monolithic truyền thống và microservices.
+
+**Modular Monolith** kết hợp sức mạnh của cấu trúc monolithic với sự linh hoạt của microservices. Kiến trúc này phân rã một monolith truyền thống thành các module được định nghĩa rõ ràng, kết nối lỏng lẻo. Mỗi module được thiết kế xung quanh một business domain tương tự như microservices, nhưng tất cả đều chạy trong cùng một application process, tránh được sự phức tạp của giao tiếp mạng giữa các service.
+
+Một trong những ưu điểm chính là đơn giản hóa quản lý dữ liệu và duy trì tính toàn vẹn giao dịch với một schema database thống nhất hoặc được phối hợp. Chạy tất cả các thành phần trong cùng một process loại bỏ network overhead thấy trong kiến trúc microservices.
+
+Lợi ích đáng kể của cách tiếp cận modular monolith là tính tiến hóa của nó. Các tổ chức có thể bắt đầu với một modular monolith, và khi nhu cầu phát triển, dần dần chuyển đổi các module cụ thể thành microservices.
+
+## Tổng quan dự án khóa học
+
+Trong khóa học này, chúng ta sẽ phát triển từng module của kiến trúc modular trên nền tảng .NET từng bước một. Dự án bao gồm các module sau:
+
+- **Catalog Module** — quản lý danh mục sản phẩm
+- **Basket Module** — quản lý giỏ hàng
+- **Ordering Module** — xử lý đơn hàng
+- **Identity Module** — xác thực người dùng
+
+Về quản lý dữ liệu, dữ liệu cho các module sẽ được lưu trữ trong cơ sở dữ liệu quan hệ PostgreSQL và Redis distributed cache. Mặc dù dùng một database PostgreSQL duy nhất, mỗi module sẽ có schema riêng để đảm bảo sự cô lập dữ liệu giữa các module.
+
+Về nguyên tắc kiến trúc, chúng ta sẽ áp dụng **CQRS** và **Vertical Slice Architecture** cho mỗi module. Các module sẽ giao tiếp với nhau thông qua in-process method calls. Chúng ta cũng sử dụng RabbitMQ cho giao tiếp bất đồng bộ hướng sự kiện, bảo mật API với Keycloak sử dụng OpenID Connect và Bearer tokens, và triển khai Outbox Pattern cho reliable messaging giữa các module.
+
+### Catalog Module
+
+Catalog module sử dụng ASP.Net Core Minimal APIs và các tính năng mới nhất của .NET 8 và C# 12. Chúng ta sẽ phát triển Vertical Slice Architecture với feature folders, áp dụng Domain Driven Design với MediatR library, sử dụng Domain Events và Integration Events, Entity Framework Core Code First với PostgreSQL, Carter Library để expose Minimal API endpoints, và cross-cutting concerns bao gồm logging với Serilog, validation với MediatR pipeline behaviors, exception handling và pagination.
+
+### Basket Module
+
+Basket module tương tự với Catalog module về Vertical Slice Architecture, DDD và CQRS, nhưng bổ sung thêm Redis như một distributed cache bên cạnh PostgreSQL. Chúng ta cũng sẽ triển khai Proxy Pattern, Decorator Pattern và Cache-aside Pattern.
+
+### Giao tiếp đồng bộ giữa các module
+
+Basket module sẽ giao tiếp đồng bộ với Catalog module thông qua in-process method calls để lấy giá sản phẩm. Client gửi request thêm item vào basket, basket module sẽ gọi catalog module đồng bộ qua MediatR để lấy thông tin giá sản phẩm mới nhất.
+
+### Giao tiếp bất đồng bộ với RabbitMQ
+
+Đối với giao tiếp bất đồng bộ giữa catalog và basket module về thông tin giá: client gửi request cập nhật giá đến catalog module, catalog module publish sự kiện `ProductPriceChanged` integration event lên RabbitMQ, sau đó basket module consume sự kiện này và cập nhật giá sản phẩm trong giỏ hàng theo cách bất đồng bộ.
+
+### Identity Module
+
+Chúng ta sẽ phát triển user identity module với Keycloak authentication, triển khai OAuth2 và OpenID Connect flows, cấu hình Keycloak trong Docker Compose file, và bảo mật các API với Keycloak OpenID Connect trong ASP.Net Core.
+
+### Ordering Module
+
+Ordering module có cách tiếp cận tương tự catalog và basket module — DDD và Vertical Slice Architecture — và bổ sung thêm giao tiếp bất đồng bộ với Outbox Pattern. Basket module publish `BasketCheckout` event, Outbox Processor publish event đến RabbitMQ, và Ordering module consume event để thực hiện checkout operations.
+
+### Di chuyển lên Microservices
+
+Cuối khóa học, chúng ta sẽ thảo luận về việc migrate từ modular monolith sang microservices sử dụng Strangler Fig Pattern.
+
+## Điều kiện tiên quyết
+
+Để theo dõi khóa học hiệu quả, bạn cần:
+
+- **.NET 8** hoặc phiên bản mới hơn — đây là nền tảng của mọi thứ chúng ta làm trong khóa học
+- **Visual Studio 2022** hoặc mới hơn — IDE ưa thích cho phát triển .NET, cần bao gồm workload ASP.Net và web development
+- **Docker Desktop** — cần thiết để containerize ứng dụng và cloud native backing services, dùng để chạy môi trường production mô phỏng với Docker Compose
+- **Postman** — công cụ phổ biến để test API, chúng ta sẽ dùng Postman để test các module API
+
+Vui lòng cài đặt tất cả các prerequisites trước khi bắt đầu khóa học.
+
+## Source Code và Slides
+
+Toàn bộ code được viết và trình bày trong khóa học đều có sẵn trên GitHub. Đây là repository GitHub trực tiếp mà cộng đồng .NET cùng phát triển. Bạn có thể tải xuống, khám phá và thậm chí đóng góp vào repository. Code được tổ chức theo từng section, cho phép bạn nhảy thẳng vào section muốn và tiếp tục phát triển từ đó mà không cần bắt đầu từ đầu.
+
+Mỗi lecture đi kèm với các slides chi tiết tóm tắt các điểm chính và khái niệm. Slides có sẵn để tải xuống trong phần Lecture Resources.
+
+## Demo ứng dụng hoàn chỉnh
+
+Để chạy demo ứng dụng hoàn chỉnh, bạn cần clone repository từ GitHub, mở Visual Studio và khởi động Docker Desktop, sau đó click chuột phải vào Docker Compose và chọn "Set as Startup Project", rồi chạy Docker Compose không debug.
+
+Lệnh này sẽ kích hoạt tất cả backing services bao gồm API project. Bạn có thể xác nhận từ Docker Desktop rằng tất cả các container đang chạy, bao gồm PostgreSQL, Redis, RabbitMQ, Keycloak và API project.
+
+### Test Catalog Module
+
+Mở Postman collection, thay đổi environment từ localhost sang docker. Gửi HTTP POST request đến endpoint `localhost:6060/products` với payload chứa thông tin sản phẩm (name, category, description, image, price). Response trả về 201 Created với ID sản phẩm mới tạo.
+
+Tiếp theo test Get Products với pagination bằng cách gửi HTTP GET request đến `localhost:6060/products` với page index và page size. Bạn có thể thay đổi page index để xem sản phẩm ở các trang khác nhau.
+
+### Test Checkout Basket với Outbox Pattern
+
+Đây là luồng end-to-end quan trọng nhất: client gửi HTTP POST request đến `/basket/checkout` → basket handler tạo record trong outbox table và xóa basket trong cùng một transaction → Outbox Processor publish `BasketCheckout` event lên RabbitMQ → Ordering module consume event và tạo đơn hàng mới.
+
+Để thực hiện test này, bạn cần lấy access token từ Identity Server trước, sau đó dùng token đó để gọi API. Sau khi gửi request checkout, bạn có thể xác nhận trong RabbitMQ Management Dashboard rằng message đã được publish và consume. Cuối cùng, kiểm tra Ordering module để xác nhận đơn hàng đã được tạo thành công.
+
+## Cấu trúc code
+
+Solution được tổ chức trong ba folder chính:
+
+### Bootstrapper
+Chứa **API project** — ASP.Net Core Web API project expose APIs cho tất cả modules, đóng vai trò là entry point của ứng dụng, routing các incoming request đến module phù hợp.
+
+### Modules
+Folder **Modules** là nơi chứa core business logic. Mỗi module (Catalog, Basket, Ordering) triển khai Vertical Slice Architecture, đóng gói các features và data operations trong ranh giới của chúng. Điều này có nghĩa là mỗi feature hoặc slice đóng gói logic, route và dependencies riêng, tạo ra code được cô lập và dễ bảo trì.
+
+Ví dụ về Catalog module: bên trong class library có thư mục `Data` (chứa EF Core và PostgreSQL operations) và thư mục `Products/Features` (triển khai tất cả use cases bao gồm CRUD operations). Thư mục `Modules` chứa DDD entities, còn `Events` chứa Domain Events và Integration Events.
+
+Trong Catalog module, chúng ta sử dụng CQRS với MediatR — tách biệt read queries khỏi write commands, đơn giản hóa việc bảo trì và khả năng mở rộng. MediatR đóng vai trò trung gian, xử lý requests/commands và publish notifications.
+
+### Shared
+Folder **Shared** đại diện cho các common và cross-cutting concerns được dùng chung bởi tất cả modules, bao gồm: logging, validation, exception handling, pipeline behaviors, data extensions, DDD abstractions, CQRS abstractions, pagination, messaging, event handling và các utilities dùng chung khác.
+
+Solution cũng bao gồm Docker Compose files để orchestrate tất cả các module trong môi trường Docker, cho phép chạy toàn bộ ứng dụng bao gồm tất cả modules và backing services (PostgreSQL, Redis, RabbitMQ, Keycloak, SEQ) trong môi trường production mô phỏng.
+
+## Kiến trúc, Pattern và Best Practices
+
+### External vs Internal Architecture
+
+Bên ngoài, modular monolith hoặc microservices làm việc cùng nhau trong một hệ sinh thái rộng hơn bao gồm cloud native backing services, client applications, APIs và các backend modules nội bộ sử dụng database schemas riêng.
+
+Tuy nhiên, mỗi service hoặc module có thể có kiến trúc, pattern và thậm chí technology stack riêng phù hợp với trách nhiệm cụ thể của nó — đây được gọi là **polyglot architectures**. Các module CRUD đơn giản có thể không cần độ phức tạp kiến trúc như các module quản lý business rules phức tạp. Điều quan trọng là chọn đúng công cụ cho đúng công việc.
+
+Trong toàn bộ khóa học, chúng ta sẽ áp dụng **Vertical Slice Architecture** cho kiến trúc nội bộ của mỗi module (Catalog, Basket, Ordering), phân chia chức năng thành các features có thể quản lý và độc lập.
+
+### Design Patterns và Principles
+
+- **SOLID Principles** — viết code robust và maintainable
+- **Dependency Injection** — decoupling classes và interfaces
+- **CQRS (Command Query Responsibility Segregation)** — tách biệt read và write operations để tăng khả năng mở rộng
+- **Mediator Pattern** — giảm dependencies giữa các objects, tạo điều kiện giao tiếp dễ dàng hơn
+- **Proxy và Decorator Pattern** — thêm behavior mới vào objects mà không thay đổi interface
+- **Publish-Subscribe Pattern** — cho phép các modules giao tiếp bất đồng bộ
+- **Outbox Pattern** — đảm bảo giao tiếp bất đồng bộ đáng tin cậy giữa các modules
+
+### Database Management và Caching
+
+- **PostgreSQL** — cơ sở dữ liệu quan hệ lớn cho các giao dịch
+- **Redis** — distributed caching để tăng hiệu suất
+- **RabbitMQ** và **MassTransit Library** — message broker cho giao tiếp bất đồng bộ
+- **Keycloak** — identity provider với OpenID Connect và Bearer tokens
+- **SEQ** — centralized structured logging với Serilog
+
+### .NET Libraries
+
+- **Carter** — đơn giản hóa routing và xử lý requests
+- **MediatR** — xử lý requests và notifications
+- **FluentValidation** — đảm bảo inputs đúng đắn
+- **Mapster** — xử lý object mappings
+- **MassTransit** — abstract complexity của message brokers
+- **Entity Framework Core** — ORM
+- **Serilog** — centralized logging
+
+## Luồng học tập
+
+### Bước 1: Tạo Solution Structure
+
+Bắt đầu bằng việc thiết lập cấu trúc solution trong Visual Studio — tổ chức project files và cấu hình các thư mục cần thiết.
+
+### Bước 2: Wire-up Dependencies giữa các Modules
+
+Quản lý dependency injection để đảm bảo giao tiếp liền mạch giữa các modules.
+
+### Bước 3: Phát triển từng Module
+
+Bắt đầu với **Catalog Module** — áp dụng Vertical Slice Architecture và CQRS với MediatR. Tiếp theo là **Basket Module** — phân tán caching với Redis, Proxy/Decorator/Cache-aside patterns. Sau đó là **Identity Module** với Keycloak authentication, OAuth2 và OpenID Connect. Cuối cùng là **Ordering Module** với giao tiếp bất đồng bộ và Outbox Pattern.
+
+### Bước 4: Giao tiếp giữa các Module
+
+**Giao tiếp đồng bộ:** in-process method calls (public APIs) — ví dụ lấy giá sản phẩm từ Catalog khi thêm item vào Basket.
+
+**Giao tiếp bất đồng bộ:** RabbitMQ và MassTransit — xử lý price updates giữa Catalog và Basket module, và Basket Checkout events đến Ordering module với Outbox Pattern.
+
+### Bước 5: Authentication và Authorization
+
+Bảo mật APIs với Keycloak, OpenID Connect và Bearer tokens.
+
+### Bước 6: Containerize và Orchestrate
+
+Tạo Dockerfiles và Docker Compose YAML files để containerize và orchestrate các modules cùng backing services.
+
+## Phương pháp học
+
+Trong mỗi section, chúng ta sẽ tuân theo phương pháp học bốn bước:
+
+1. **Phân tích (Analyze)** — phân tích domain và technical, hiểu business requirements và technical landscape
+2. **Học pattern và principles (Learn)** — tìm hiểu các pattern và principles liên quan để có kiến thức nền tảng
+3. **Phát triển và kiểm thử (Develop & Test)** — áp dụng kiến thức vào thực tế, đảm bảo các modules robust và sẵn sàng cho production
+4. **Triển khai (Deploy)** — containerize và orchestrate các services, triển khai vào môi trường Docker
+
+Bằng cách theo dõi các bước này, bạn sẽ có hiểu biết toàn diện về EShop Modular Monolith cả ở khía cạnh thiết kế lẫn triển khai.

@@ -1,0 +1,285 @@
+Trong phần này, chúng ta sẽ thực hiện wire-up dependencies giữa các modules — tức là quản lý Dependency Injection (DI) cho toàn bộ ứng dụng Modular Monolith. Đây là bước quan trọng để kết nối tất cả các modules lại với nhau trong API project.
+
+## Mục Tiêu
+
+Để quản lý dependencies hiệu quả giữa các modules, chúng ta cần:
+
+1. **Tạo Module Classes:** Mỗi module có một class chịu trách nhiệm cấu hình dependencies của nó.
+2. **Đăng ký Module Services:** Định nghĩa extension methods để đăng ký services từ mỗi module vào DI container.
+3. **Cấu hình API Project:** Gọi các extension methods này trong Bootstrapper API project để wire up tất cả dependencies.
+
+Mỗi module (Catalog, Basket, Ordering) sẽ có một class riêng chứa extension methods cho:
+- `AddXxxModule(IServiceCollection, IConfiguration)` — đăng ký services vào DI container
+- `UseXxxModule(IApplicationBuilder)` — cấu hình HTTP request pipeline
+
+## ASP.Net Core Dependency Injection
+
+### Vòng đời của Services
+
+ASP.Net Core cung cấp built-in DI container với ba vòng đời:
+
+| Lifecycle | Mô tả |
+|-----------|--------|
+| `Transient` | Tạo instance mới mỗi lần được yêu cầu |
+| `Scoped` | Tạo một instance duy nhất per HTTP request |
+| `Singleton` | Tạo một instance duy nhất cho toàn bộ lifetime của ứng dụng |
+
+```csharp
+// Ví dụ đăng ký services
+services.AddTransient<IMyService, MyService>();
+services.AddScoped<IMyRepository, MyRepository>();
+services.AddSingleton<IMyCache, MyCache>();
+```
+
+Trong khóa học này, `Scoped` được sử dụng phổ biến nhất — phù hợp cho DbContext và repositories.
+
+## Module Classes
+
+### CatalogModule.cs
+
+```csharp
+// Catalog/CatalogModule.cs
+public static class CatalogModule
+{
+    public static IServiceCollection AddCatalogModule(
+        this IServiceCollection services,
+        IConfiguration configuration)
+    {
+        // Application Use Case services
+        services.AddMediatRWithAssemblies(Assembly.GetExecutingAssembly());
+
+        // Data Infrastructure services
+        services.AddDbContext<CatalogDbContext>(options =>
+            options.UseNpgsql(configuration.GetConnectionString("Database")));
+
+        // Carter
+        services.AddCarterWithAssemblies(Assembly.GetExecutingAssembly());
+
+        return services;
+    }
+
+    public static IApplicationBuilder UseCatalogModule(this IApplicationBuilder app)
+    {
+        app.UseMigration<CatalogDbContext>();
+        return app;
+    }
+}
+```
+
+### BasketModule.cs
+
+```csharp
+public static class BasketModule
+{
+    public static IServiceCollection AddBasketModule(
+        this IServiceCollection services,
+        IConfiguration configuration)
+    {
+        // Application services
+        services.AddMediatRWithAssemblies(Assembly.GetExecutingAssembly());
+
+        // Data Infrastructure
+        var connectionString = configuration.GetConnectionString("Database");
+        services.AddDbContext<BasketDbContext>(options =>
+            options.UseNpgsql(connectionString));
+
+        // Cache (Redis)
+        services.AddStackExchangeRedisCache(options =>
+            options.Configuration = configuration.GetConnectionString("Redis"));
+
+        // Carter
+        services.AddCarterWithAssemblies(Assembly.GetExecutingAssembly());
+
+        // Background service for outbox
+        services.AddHostedService<OutboxProcessor>();
+
+        return services;
+    }
+
+    public static IApplicationBuilder UseBasketModule(this IApplicationBuilder app)
+    {
+        app.UseMigration<BasketDbContext>();
+        return app;
+    }
+}
+```
+
+### OrderingModule.cs
+
+```csharp
+public static class OrderingModule
+{
+    public static IServiceCollection AddOrderingModule(
+        this IServiceCollection services,
+        IConfiguration configuration)
+    {
+        // Data Infrastructure
+        services.AddDbContext<OrderingDbContext>(options =>
+            options
+                .AddInterceptors(
+                    new AuditableEntityInterceptor(),
+                    new DispatchDomainEventsInterceptor())
+                .UseNpgsql(configuration.GetConnectionString("Database")));
+
+        return services;
+    }
+
+    public static IApplicationBuilder UseOrderingModule(this IApplicationBuilder app)
+    {
+        app.UseMigration<OrderingDbContext>();
+        return app;
+    }
+}
+```
+
+## NuGet Packages và Abstractions
+
+### Vấn đề: Class Libraries không có ASP.Net Core abstractions
+
+Khi viết extension methods cho `IServiceCollection` và `IApplicationBuilder` trong class libraries (không phải Web SDK projects), cần install thêm packages:
+
+- `Microsoft.Extensions.DependencyInjection.Abstractions` — cho `IServiceCollection`
+- `Microsoft.Extensions.Configuration.Abstractions` — cho `IConfiguration`
+- `FluentValidation.AspNetCore` — cung cấp `IApplicationBuilder` abstractions (package `Microsoft.AspNetCore.Http.Abstractions` đã deprecated)
+
+**Giải pháp tốt nhất:** Install tất cả các packages này vào **Shared class library** một lần, thay vì install cho từng module riêng lẻ. Vì mỗi module đã reference Shared library, nên các abstractions này sẽ tự động available.
+
+```xml
+<!-- Shared/Shared.csproj -->
+<ItemGroup>
+  <PackageReference Include="Microsoft.Extensions.DependencyInjection.Abstractions" />
+  <PackageReference Include="Microsoft.Extensions.Configuration.Abstractions" />
+  <PackageReference Include="FluentValidation.AspNetCore" />
+  <PackageReference Include="MediatR" />
+</ItemGroup>
+```
+
+## Program.cs — Tập Trung Wire-up
+
+### Cấu trúc Program.cs
+
+```csharp
+// API/Program.cs
+using Catalog;
+using Basket;
+using Ordering;
+
+var builder = WebApplication.CreateBuilder(args);
+
+// ============================================
+// TRƯỚC KHI BUILD: Đăng ký services vào DI
+// ============================================
+
+// Common services
+builder.Services.AddCarter();
+builder.Services.AddMassTransitWithAssemblies(
+    builder.Configuration,
+    typeof(BasketModule).Assembly,
+    typeof(OrderingModule).Assembly);
+
+// Module services
+builder.Services.AddCatalogModule(builder.Configuration);
+builder.Services.AddBasketModule(builder.Configuration);
+builder.Services.AddOrderingModule(builder.Configuration);
+
+var app = builder.Build();
+
+// ============================================
+// SAU KHI BUILD: Cấu hình HTTP request pipeline
+// ============================================
+
+app.MapCarter();
+
+app.UseCatalogModule();
+app.UseBasketModule();
+app.UseOrderingModule();
+
+app.Run();
+```
+
+### Global Using File
+
+Để tránh lặp lại using statements trong nhiều files của API project:
+
+```csharp
+// API/GlobalUsings.cs
+global using Catalog;
+global using Basket;
+global using Ordering;
+```
+
+Sau khi thêm file này, các using statements trong `Program.cs` trở nên không cần thiết và có thể xóa.
+
+## ASP.Net Middlewares và HTTP Request Pipeline
+
+### Middleware là gì?
+
+Middleware là phần mềm được lắp vào application pipeline để xử lý requests và responses. Mỗi component trong pipeline có thể:
+- Tự xử lý request và trả response
+- Chuyển request sang middleware tiếp theo
+
+### Thứ tự xử lý
+
+```
+HTTP Request
+    → Exception Handler Middleware
+    → Authentication Middleware
+    → Authorization Middleware
+    → Routing Middleware
+    → Endpoint (Carter / Controller)
+    → HTTP Response
+```
+
+### Built-in Middlewares
+
+```csharp
+app.UseStaticFiles();       // Phục vụ static files (HTML, CSS, JS)
+app.UseRouting();           // Định tuyến requests
+app.UseAuthentication();    // Xác thực người dùng
+app.UseAuthorization();     // Kiểm tra quyền truy cập
+app.UseExceptionHandler();  // Xử lý exceptions
+app.MapCarter();            // Kích hoạt Carter endpoints
+```
+
+## Lợi Ích của Kiến Trúc này
+
+### 1. Modularity (Tính module hóa)
+
+Mỗi module quản lý dependencies của riêng nó. Khi thêm module mới, chỉ cần:
+- Tạo `XxxModule.cs` với `AddXxxModule()` và `UseXxxModule()`
+- Gọi hai extension methods này trong `Program.cs`
+
+### 2. Clarity (Rõ ràng)
+
+Nhìn vào `Program.cs`, dễ dàng thấy toàn bộ modules và services đang được sử dụng.
+
+### 3. Separation of Concerns (Phân tách trách nhiệm)
+
+Mỗi module class chịu trách nhiệm cho:
+- DI registrations của module đó
+- HTTP pipeline configuration của module đó
+
+API project chỉ là điểm tập trung để gọi các extension methods — không chứa bất kỳ business logic nào.
+
+### 4. Scalability (Khả năng mở rộng)
+
+Thêm module mới không cần sửa code hiện có — chỉ thêm calls vào `Program.cs`.
+
+## Tóm Tắt Quy Trình
+
+```
+Mỗi Module (Catalog/Basket/Ordering)
+    └── XxxModule.cs
+        ├── AddXxxModule() → đăng ký services, DbContext, MediatR, Carter
+        └── UseXxxModule() → auto-migrate database, configure middleware
+
+API/Program.cs
+    ├── builder.Services.AddCatalogModule(config)
+    ├── builder.Services.AddBasketModule(config)
+    ├── builder.Services.AddOrderingModule(config)
+    ├── app.UseCatalogModule()
+    ├── app.UseBasketModule()
+    └── app.UseOrderingModule()
+```
+
+Kiến trúc này đảm bảo tính module hóa, dễ maintain và scale — mỗi module độc lập nhưng được tích hợp nhất quán vào ứng dụng qua `Program.cs`.

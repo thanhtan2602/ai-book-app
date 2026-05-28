@@ -1,0 +1,239 @@
+Trong phần này, chúng ta sẽ tìm hiểu về quản lý dữ liệu trong kiến trúc modular monolith và thiết lập PostgreSQL làm cơ sở dữ liệu chính. Cụ thể, chúng ta sẽ học cách các module lưu trữ dữ liệu vào một cơ sở dữ liệu quan hệ PostgreSQL duy nhất.
+
+Nội dung của phần này bao gồm:
+- Quản lý dữ liệu trong kiến trúc modular monolith
+- Phân tách schema cơ sở dữ liệu giữa các module
+- Backing services là gì và cách sử dụng chúng
+- Docker Compose để chạy backing services và databases
+- Thêm PostgreSQL vào Docker Compose file
+- Chiến lược triển khai cho ứng dụng modular monolith
+- Thiết lập PostgreSQL DB với Docker Compose
+- Chạy Docker Compose trên Visual Studio
+
+## Tầm quan trọng của Data Isolation
+
+Data isolation (cô lập dữ liệu) là khía cạnh then chốt của modular monolith vì những lý do sau:
+
+- **Khả năng bảo trì (Maintainability):** Cô lập dữ liệu theo module giúp hệ thống dễ bảo trì và phát triển hơn.
+- **Khả năng mở rộng (Scalability):** Các phần khác nhau của hệ thống có thể scale độc lập.
+- **Bảo mật (Security):** Dữ liệu nhạy cảm có thể được cô lập và bảo vệ hiệu quả hơn.
+- **Giảm xung đột (Conflict Reduction):** Giảm nguy cơ xung đột dữ liệu giữa các module, đảm bảo tính toàn vẹn dữ liệu.
+
+## Bốn chiến lược Data Isolation
+
+### 1. Separate Table (Bảng riêng biệt)
+
+Mỗi module có tập hợp bảng riêng trong cùng một database.
+
+**Ưu điểm:** Đơn giản để triển khai và quản lý, dễ query dữ liệu across modules.
+
+**Nhược điểm:** Cô lập schema hạn chế, thay đổi schema ở một module có thể ảnh hưởng các module khác, khó thực thi ranh giới dẫn đến rò rỉ dữ liệu tiềm ẩn.
+
+### 2. Separate Schema (Schema riêng biệt) ✓ *Được khuyến nghị*
+
+Mỗi module có schema riêng trong cùng một database.
+
+**Ưu điểm:** Cân bằng tốt giữa cô lập và khả năng quản lý, phân tách dữ liệu một cách logic — rõ ràng dữ liệu nào thuộc module nào, dễ thực thi ranh giới và kiểm soát truy cập ở cấp độ schema.
+
+**Nhược điểm:** Phức tạp hơn separate tables một chút, tài nguyên database dùng chung có thể trở thành bottleneck.
+
+### 3. Separate Database (Cơ sở dữ liệu riêng biệt)
+
+Mỗi module sử dụng database riêng của nó.
+
+**Ưu điểm:** Cô lập hoàn hảo, thay đổi ở một database không ảnh hưởng các database khác, có thể scale và bảo trì độc lập cho từng database.
+
+**Nhược điểm:** Tăng độ phức tạp trong quản lý và backup, chi phí vận hành cao hơn do nhiều database instance, các cross-module queries phức tạp hơn và có thể cần cơ chế giao tiếp liên database.
+
+### 4. Different Persistence Mechanisms (Cơ chế lưu trữ khác nhau)
+
+Mỗi module có thể dùng loại công nghệ lưu trữ khác nhau như SQL, NoSQL, v.v.
+
+**Ưu điểm:** Modules có thể chọn công nghệ lưu trữ tốt nhất cho nhu cầu cụ thể, độ cô lập và linh hoạt cao.
+
+**Nhược điểm:** Tăng đáng kể độ phức tạp và overhead vận hành, khó quản lý và duy trì tính nhất quán across các cơ chế lưu trữ khác nhau.
+
+## Best Practice: Separate Schema Approach
+
+### Tại sao Separate Schema là best practice?
+
+Trong kiến trúc modular monolith, duy trì ranh giới rõ ràng giữa các module là điều thiết yếu. Phân tách schema database là cách thực hành giúp đạt được điều này bằng cách cô lập dữ liệu của mỗi module trong schema riêng.
+
+**Lợi ích của Separate Schema:**
+
+1. **Cô lập dữ liệu logic:** Dữ liệu của mỗi module được lưu trong schema riêng, rõ ràng dữ liệu nào thuộc module nào. Điều này giúp duy trì tính toàn vẹn và nhất quán của dữ liệu.
+
+2. **Cân bằng tốt:** Cân bằng giữa cô lập và dễ quản lý, đảm bảo phân tách dữ liệu logic, đơn giản hóa bảo trì và bảo mật.
+
+3. **Dễ quản lý:** Dễ quản lý hơn so với multiple databases hoặc different persistence mechanisms. Thay đổi schema ở một module không ảnh hưởng các module khác. Đơn giản hóa các quy trình backup, restore và migration.
+
+4. **Hiệu suất:** Giảm độ phức tạp của cross-module queries, tối ưu hóa tài nguyên database dùng chung hiệu quả hơn.
+
+5. **Bảo mật:** Cho phép kiểm soát truy cập chi tiết ở cấp độ schema, đơn giản hóa các yêu cầu kiểm toán và tuân thủ.
+
+### Triển khai Separate Schema trong EShop
+
+Trong ứng dụng EShop modular monolith, mỗi module (Catalog, Basket, Ordering, Identity) sẽ có schema dữ liệu riêng trong một database PostgreSQL duy nhất. Cách tiếp cận này giúp duy trì sự phân tách dữ liệu rõ ràng trong khi giữ overhead quản lý ở mức thấp.
+
+## Multi-context EF Core DbContext
+
+Để triển khai separate schema approach trong Entity Framework Core, chúng ta sử dụng nhiều `DbContext` objects — mỗi `DbContext` chịu trách nhiệm cho một module cụ thể và được cấu hình để sử dụng schema tương ứng.
+
+Ví dụ, chúng ta sẽ tạo ba DbContext:
+- **CatalogDbContext** — schema `catalog`
+- **BasketDbContext** — schema `basket`
+- **OrderingDbContext** — schema `ordering`
+
+Ví dụ cấu hình CatalogDbContext:
+
+```csharp
+public class CatalogDbContext : DbContext
+{
+    protected override void OnModelCreating(ModelBuilder modelBuilder)
+    {
+        modelBuilder.HasDefaultSchema("catalog");
+        // ... cấu hình entities
+    }
+}
+```
+
+Dòng `modelBuilder.HasDefaultSchema("catalog")` chỉ định tên schema. Entity Framework Core sẽ tạo và sử dụng schema `catalog` trong PostgreSQL database, đảm bảo cô lập dữ liệu. Tương tự, BasketDbContext dùng schema `basket` và OrderingDbContext dùng schema `ordering`.
+
+## Backing Services cho Cloud Native Architectures
+
+**Backing services** là các tài nguyên hoặc thành phần bên ngoài mà ứng dụng cloud native phụ thuộc vào để hoạt động. Chúng cung cấp hỗ trợ cho các chức năng như lưu trữ dữ liệu, messaging, caching và xác thực.
+
+Trong kiến trúc cloud native, backing services như databases, messaging systems và caching services được xem như là attached resources — bên ngoài ứng dụng và có thể được thay thế mà không cần thay đổi core logic của ứng dụng.
+
+### Các loại Backing Services phổ biến
+
+- **Databases:** PostgreSQL, MongoDB — dùng cho persistent storage
+- **Distributed Cache:** Redis, Memcached — cache dữ liệu để giảm tải database và cải thiện hiệu suất
+- **Message Brokers:** RabbitMQ, Kafka, AWS SQS — tạo điều kiện giao tiếp bất đồng bộ giữa các phần của ứng dụng
+- **Authentication Services:** Keycloak, AWS Cognito — xử lý xác thực và phân quyền
+
+### Backing Services trong EShop
+
+Trong ứng dụng EShop modular monolith:
+
+- **PostgreSQL** — database chính duy nhất cho tất cả modules
+- **Redis** — distributed cache cho Basket module, cải thiện hiệu suất và khả năng mở rộng
+- **RabbitMQ** — tạo điều kiện giao tiếp bất đồng bộ giữa các modules, đảm bảo reliable messaging và decoupling
+- **Keycloak** — xử lý xác thực và phân quyền trong Identity module
+
+## Chiến lược Triển khai
+
+### Deployment 1: Local Development với Docker Compose
+
+Trong giai đoạn đầu, chúng ta phát triển ứng dụng trên máy local và kết nối đến các backing services (database, cache, RabbitMQ) chạy trong Docker Compose. Docker Compose expose các endpoints để ứng dụng local có thể kết nối và test.
+
+### Deployment 2: Full Docker Environment
+
+Giai đoạn hai bao gồm orchestrate tất cả ứng dụng và dependencies trong môi trường Docker Compose, mô phỏng môi trường production và cho phép end-to-end testing thực sự.
+
+### Tương lai: Kubernetes và Cloud
+
+Trong tương lai, chúng ta có thể triển khai lên Kubernetes (local minikube hoặc cloud-based EKS trên AWS). Tuy nhiên trong khóa học này, chúng ta sẽ tập trung vào hai deployment strategy đầu tiên.
+
+## Thiết lập PostgreSQL với Docker Compose
+
+### Cấu trúc Docker Compose file
+
+**docker-compose.yml:**
+```yaml
+services:
+  eshopdb:
+    image: postgres
+    volumes:
+      - postgres_db:/var/lib/postgresql/data
+
+volumes:
+  postgres_db:
+```
+
+**docker-compose.override.yml:**
+```yaml
+services:
+  eshopdb:
+    container_name: eshopdb
+    environment:
+      - POSTGRES_USER=postgres
+      - POSTGRES_PASSWORD=postgres
+      - POSTGRES_DB=EshopDb
+    restart: always
+    ports:
+      - "5432:5432"
+    volumes:
+      - postgres_db:/var/lib/postgresql/data
+```
+
+Volume definitions quan trọng để lưu dữ liệu vào máy local, tránh mất dữ liệu mỗi lần chạy lại Docker Compose.
+
+### Thêm Container Orchestration Support trong Visual Studio
+
+Visual Studio 2022 có hỗ trợ tuyệt vời cho Docker và Docker Compose. Để thêm:
+
+1. Click chuột phải vào API project → **Add** → **Container Orchestrator Support**
+2. Chọn **Docker Compose** làm container orchestrator
+3. Chọn **Linux** làm target operating system
+4. Visual Studio sẽ tự động tạo Dockerfile cho API project và các Docker Compose files
+
+Lưu ý: Visual Studio tự động thêm API project vào docker-compose.yml. Theo deployment strategy 1, chúng ta cần **xóa API project khỏi Docker Compose** và chỉ giữ PostgreSQL service — vì API project sẽ chạy trên máy local và kết nối đến PostgreSQL trong Docker.
+
+## Chạy Docker Compose trên Visual Studio
+
+1. Đảm bảo Docker Desktop đang chạy
+2. Trong Visual Studio, click chuột phải vào Docker Compose → **Set as Startup Project**
+3. Click Run (hoặc nút Docker Compose profile)
+
+Lệnh này chạy `docker compose up` và sẽ:
+- Tải PostgreSQL image từ Docker Hub
+- Khởi động PostgreSQL container trong môi trường Docker local
+
+Bạn có thể xác nhận trong **Docker Desktop** rằng container đang chạy. Tên container là `eshopdb`, chạy trên port `5432`.
+
+### Kiểm tra database qua Docker CLI
+
+Kết nối vào container PostgreSQL qua Docker Desktop (tab Exec) hoặc lệnh:
+
+```bash
+docker exec -it eshopdb psql -U postgres
+```
+
+Trong PostgreSQL shell:
+- `\l` — liệt kê tất cả databases → bạn sẽ thấy `EshopDb`
+- `\c EshopDb` — kết nối vào database EshopDb
+- `\d` — liệt kê các tables (hiện tại chưa có table nào)
+- `\q` — thoát
+
+## Kết nối và Duyệt PostgreSQL với pgAdmin
+
+**pgAdmin** là công cụ quản lý mạnh mẽ và phổ biến cho PostgreSQL, giúp đơn giản hóa việc quản lý và tương tác với cơ sở dữ liệu.
+
+### Cài đặt pgAdmin
+
+Tải và cài đặt pgAdmin từ `pgadmin.org`, chọn phiên bản phù hợp với hệ điều hành (Windows, macOS, Linux).
+
+### Kết nối đến PostgreSQL Docker Container
+
+1. Đảm bảo Docker Desktop và Docker Compose profile đang chạy
+2. Mở pgAdmin
+3. Click chuột phải vào **Servers** → **Register** → **Server**
+4. Điền thông tin:
+   - **Name:** EshopDb Server
+   - **Host:** `localhost`
+   - **Port:** `5432`
+   - **Username:** `postgres`
+   - **Password:** `postgres`
+5. Click **Save**
+
+pgAdmin sẽ tự động kết nối và hiển thị database EshopDb.
+
+### Duyệt database
+
+Mở rộng database tree trong pgAdmin:
+- **Schemas** — hiện tại chỉ có schema `public`
+- Trong quá trình phát triển, chúng ta sẽ tạo thêm schemas: `catalog`, `basket`, `ordering` tương ứng với các modules
+- **Tables** — hiện tại chưa có table nào (sẽ được tạo khi chạy EF Core migrations)
+
+Trong suốt khóa học, chúng ta sẽ dùng pgAdmin để duyệt database PostgreSQL chính, xem schemas và tables của từng module.

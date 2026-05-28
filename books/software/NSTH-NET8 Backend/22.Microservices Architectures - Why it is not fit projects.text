@@ -1,0 +1,108 @@
+## Microservices Architecture – Tại Sao Không Phù Hợp Với Mọi Dự Án
+
+Trong phần này, chúng ta sẽ tìm hiểu về Microservices Architecture, những vấn đề thực tế của nó, và tại sao nó không phải là lựa chọn phù hợp cho tất cả các dự án.
+
+## Microservices Là Gì?
+
+Microservices là các service nhỏ, độc lập và loosely coupled. Chúng là các business service nhỏ có thể làm việc cùng nhau, được deploy độc lập và tự chủ.
+
+Các đặc điểm chính:
+
+- Mỗi service là một code base riêng biệt, có thể được quản lý bởi một nhóm nhỏ
+- Các service giao tiếp với nhau qua network bằng well-defined APIs
+- Implementation nội bộ của mỗi service được ẩn đối với service khác
+- Có thể deploy độc lập mà không cần rebuild lại toàn bộ ứng dụng
+- Technology agnostic – mỗi service có thể dùng tech stack riêng
+- Mỗi service có database riêng, không chia sẻ với service khác
+
+Theo định nghĩa của Martin Fowler: *"Microservice architecture là cách tiếp cận phát triển một ứng dụng đơn lẻ như một tập hợp các service nhỏ, mỗi service chạy trong process riêng và giao tiếp qua lightweight mechanisms, thường là HTTP hoặc gRPC API."*
+
+## Những Vấn Đề Với Microservices Architecture
+
+Dù có nhiều lợi ích, microservices kéo theo một loạt những thách thức nghiêm trọng.
+
+### 1. Độ phức tạp của Distributed System
+
+Microservices về bản chất là một distributed system. Quản lý và điều phối nhiều service có thể rất phức tạp. Mỗi service có deployment, monitoring và logging riêng. Mặc dù mỗi service đơn lẻ đơn giản hơn, nhưng **toàn bộ hệ thống phức tạp hơn** so với monolithic application.
+
+### 2. Network Latency và Failures
+
+Các service giao tiếp qua network, tạo ra latency. Network failures có thể gián đoạn giao tiếp giữa các service. Cần có cơ chế retry và fallback mạnh mẽ, làm tăng thêm độ phức tạp.
+
+### 3. Quản lý Dữ liệu
+
+- **Data consistency:** Đảm bảo data consistency giữa nhiều service và database là rất khó. ACID transactions khó implement trong distributed system. Thường phải dùng eventual consistency và distributed transactions (Saga pattern).
+- **Data duplication:** Dữ liệu có thể cần được nhân bản giữa các service để tăng hiệu năng, dẫn đến nguy cơ inconsistency và tốn thêm storage.
+
+### 4. Operational Overhead
+
+- **Deployment phức tạp:** Deploy và quản lý nhiều service phức tạp hơn nhiều so với một monolithic app. CI/CD pipeline cần được setup cho từng service riêng.
+- **Monitoring và logging phức tạp:** Cần aggregate data từ nhiều service, đảm bảo end-to-end visibility và trace requests qua các service.
+- **Yêu cầu DevOps skills cao:** Cần quản lý container orchestration tools như Kubernetes và Docker Swarm.
+
+### 5. Inter-Service Communication
+
+- **Chọn đúng communication protocol:** Mỗi protocol có trade-off riêng về performance, complexity và ease of use.
+- **Service discovery:** Các service cần tìm và giao tiếp với nhau một cách dynamic.
+- **Fault tolerance:** Cần implement circuit breakers, retries và fallback mechanisms.
+
+### 6. Testing và Debugging
+
+- **Integration testing khó hơn:** Khi một business requirement chạm đến nhiều microservices, việc phát triển và test end-to-end phức tạp hơn rất nhiều so với monolithic.
+- **Debugging phân tán:** Trace một vấn đề qua nhiều service và logs đòi hỏi công cụ observability tốt như Jaeger hoặc Zipkin.
+- **Không thể debug local** từ môi trường development khi có hàng chục hoặc hàng trăm microservices.
+
+## Distributed Monolith – Anti-pattern Cần Tránh
+
+Distributed Monolith là một anti-pattern đặc biệt nguy hiểm: hệ thống được chia thành các service riêng biệt nhưng vẫn giữ nguyên những nhược điểm của monolithic architecture.
+
+### Dấu hiệu nhận biết
+
+- Các service phụ thuộc tightly coupled vào nhau; thay đổi ở một service đòi hỏi thay đổi ở nhiều service khác
+- Phải deploy tất cả services cùng nhau – mất đi lợi ích deploy độc lập
+- Nhiều service dùng chung database schema – coupling ở tầng data
+- Giao tiếp quá mức giữa các service, tạo ra performance bottleneck
+
+### Nguyên nhân xuất hiện Distributed Monolith
+
+- **Service boundaries kém:** Không xác định đúng ranh giới giữa các service
+- **Thiếu Domain Driven Design:** Không hiểu đủ sâu về domain để tách service đúng cách
+- **Database coupling:** Các service dùng chung database schema
+- **Legacy code và practices:** Migrate từ monolith mà không refactor kiến trúc
+
+### Biểu đồ phân loại architecture
+
+Trên biểu đồ với trục X là số lượng service được deploy và trục Y là mức độ modularity:
+
+- **Traditional Monolith** (góc trái dưới): modularity thấp, ít service
+- **Modular Monolith** (giữa trái): modularity trung bình, số service trung bình
+- **Microservices** (góc phải trên): modularity cao, nhiều service
+- **Distributed Monolith** (cờ đỏ): nhiều service nhưng modularity thấp – đây là anti-pattern cần tránh
+
+## Case Study: Amazon Prime Video
+
+Amazon Prime Video đã có một bài học thực tế nổi tiếng về microservices versus monolith.
+
+### Vấn đề ban đầu
+
+Infrastructure ban đầu dùng kiến trúc distributed microservices với AWS Step Functions để orchestrate ba component chính: media converters, defect detectors và orchestration engine. Chi phí vận hành ở quy mô lớn tăng vọt do:
+
+- Mỗi giây xử lý stream phải thực hiện nhiều state transitions trong AWS Step Functions → nhanh chóng chạm giới hạn account và chi phí cao
+- Video frames được tạm lưu trên Amazon S3 sau mỗi bước xử lý → lượng S3 interactions khổng lồ làm tăng chi phí đáng kể
+
+### Giải pháp: Chuyển sang Monolith
+
+Nhóm quyết định re-architect sang kiến trúc **monolithic**: đưa tất cả components vào một single process chạy trong Amazon ECS task.
+
+Lợi ích đạt được:
+- Loại bỏ hoàn toàn việc dùng Amazon S3 làm intermediate storage
+- Đơn giản hóa orchestration – tất cả xử lý trong cùng một instance
+- Chia sẻ dữ liệu qua instance memory thay vì qua network/storage
+
+Kết quả: **Giảm chi phí infrastructure hơn 90%** và tăng khả năng xử lý lên hàng nghìn streams đồng thời.
+
+### Bài học rút ra
+
+Kiến trúc distributed microservices không mang lại lợi ích như kỳ vọng cho use case cụ thể này. Đóng gói tất cả components vào một process duy nhất đã loại bỏ intermediate storage và đơn giản hóa orchestration.
+
+Đây là minh chứng rõ ràng rằng **kiến trúc tốt nhất phụ thuộc vào bài toán cụ thể**, không phải lúc nào microservices cũng là câu trả lời đúng. Điều quan trọng là chọn đúng kiến trúc cho đúng bài toán.

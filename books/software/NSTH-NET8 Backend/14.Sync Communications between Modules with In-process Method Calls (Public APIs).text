@@ -1,0 +1,228 @@
+## Giao Tiếp Đồng Bộ Giữa Các Module Bằng In-Process Method Calls (Public APIs)
+
+Trong phần này, chúng ta sẽ phát triển giao tiếp đồng bộ giữa Catalog Module và Basket Module thông qua in-process method calls và public APIs. Đây là cơ chế để Basket Module lấy thông tin sản phẩm (giá, tên) từ Catalog Module khi người dùng thêm sản phẩm vào giỏ hàng.
+
+---
+
+## Vấn Đề Giao Tiếp Giữa Các Module
+
+Khi người dùng thêm sản phẩm vào giỏ hàng, `AddItemIntoBasket` handler cần lấy thông tin sản phẩm mới nhất (giá, tên) từ Catalog Module để đảm bảo tính chính xác. Việc lấy thông tin này trực tiếp từ client request là không an toàn vì dữ liệu có thể bị giả mạo.
+
+Giải pháp là Basket Module gửi request đến Catalog Module thông qua MediatR in-process method calls để lấy thông tin sản phẩm.
+
+---
+
+## So Sánh Các Kiểu Giao Tiếp
+
+**Monolithic**: Tất cả thành phần giao tiếp trong cùng process, không cần network protocol, ít phức tạp nhưng tight coupling.
+
+**Microservices**: Các service giao tiếp qua network dùng REST, gRPC hoặc messaging như RabbitMQ. Cho phép deploy và scale độc lập nhưng phải xử lý network latency, service discovery và load balancing.
+
+**Modular Monolith**: Các module giao tiếp trong cùng process (inter-process communication) bằng method calls. Chúng ta dùng MediatR sender object để gọi với sự liên kết lỏng (loose coupling) giữa các module, vừa đảm bảo hiệu suất vừa tách bạch module.
+
+---
+
+## In-Process Method Calls (Public APIs)
+
+Trong kiến trúc Modular Monolith, mỗi module expose một tập các **Public APIs** — các method mà module khác có thể gọi. Các API này thường được định nghĩa qua interface, đảm bảo contract rõ ràng.
+
+Lợi ích của in-process method calls:
+- **Hiệu suất cao**: Không có network latency vì giao tiếp trong cùng process.
+- **Đơn giản**: Dễ implement và hiểu.
+- **Dễ debug**: Debug in-process calls đơn giản với các công cụ debug tiêu chuẩn.
+- **Strong Typing**: Compile-time checking đảm bảo tính nhất quán.
+
+---
+
+## Catalog.Contracts Class Library
+
+Để tránh tight coupling giữa các module, chúng ta không để Basket Module tham chiếu trực tiếp vào Catalog Module. Thay vào đó, chúng ta tạo **Catalog.Contracts** class library — một thư viện chứa các abstraction (DTO, query, command) cho phép giao tiếp mà không tạo phụ thuộc trực tiếp.
+
+Đây là ứng dụng của **Dependency Inversion Principle**: các module cấp cao không phụ thuộc vào module cấp thấp mà phụ thuộc vào abstraction.
+
+Cấu trúc thư mục Catalog.Contracts mirror theo Catalog Module:
+
+```
+Catalog.Contracts/
+  Products/
+    Features/
+      GetProductById/
+        GetProductByIdQuery.cs
+    Dtos/
+      ProductDto.cs
+```
+
+---
+
+## Phân Tách CQRS Contracts
+
+Trong `GetProductByIdQuery.cs`, chúng ta định nghĩa query và result record types:
+
+```csharp
+// Catalog.Contracts/Products/Features/GetProductById/GetProductByIdQuery.cs
+public record GetProductByIdQuery(Guid Id) : IQuery<GetProductByIdResult>;
+
+public record GetProductByIdResult(ProductDto Product);
+```
+
+`ProductDto` được chuyển từ Catalog Module sang Catalog.Contracts:
+
+```csharp
+// Catalog.Contracts/Products/Dtos/ProductDto.cs
+public record ProductDto(
+    Guid Id,
+    string Name,
+    string Category,
+    string Description,
+    string ImageFile,
+    decimal Price
+);
+```
+
+Khi chuyển `ProductDto` vào contracts library, nó trở thành nguồn chân lý duy nhất (single source of truth) cho cấu trúc dữ liệu sản phẩm.
+
+---
+
+## Shared.Contracts Class Library
+
+Vì `GetProductByIdQuery` implement `IQuery<T>` — interface đến từ thư viện Scrutor abstractions — chúng ta cần một nơi để đặt các abstraction này có thể truy cập từ contracts library.
+
+Giải pháp là tạo **Shared.Contracts** class library để chứa Scrutor abstractions và MediatR-related interfaces:
+
+```csharp
+// Shared.Contracts/CQRS/IQuery.cs
+namespace SharedContracts.CQRS;
+
+public interface IQuery<out TResponse> : IRequest<TResponse> { }
+
+public interface IQueryHandler<in TQuery, TResponse>
+    : IRequestHandler<TQuery, TResponse>
+    where TQuery : IQuery<TResponse> { }
+```
+
+Sau đó:
+- Shared.Contracts cài package MediatR
+- Shared class library reference Shared.Contracts (và xóa MediatR khỏi Shared)
+- Catalog.Contracts reference Shared.Contracts để truy cập `IQuery`
+
+---
+
+## Thiết Lập Project References
+
+Cấu trúc tham chiếu:
+
+```
+Shared.Contracts  (MediatR abstractions)
+    ↑
+Shared           (common operations)
+    ↑
+Catalog.Contracts (GetProductByIdQuery, ProductDto)
+    ↑              ↑
+Catalog Module   Basket Module
+```
+
+Sau khi thêm project reference và cập nhật global usings:
+
+```csharp
+// Catalog Module - GlobalUsings.cs
+global using CatalogContracts.Products.Dtos;
+
+// Basket Module - GlobalUsings.cs
+global using CatalogContracts.Products.Features.GetProductById;
+```
+
+---
+
+## Basket Lấy Giá Từ Catalog Qua MediatR
+
+Trong `AddItemIntoBasketHandler`, thay vì lấy giá từ client request, chúng ta gọi Catalog Module thông qua MediatR:
+
+```csharp
+public class AddItemIntoBasketHandler(
+    IBasketRepository repository,
+    ISender sender) : ICommandHandler<AddItemIntoBasketCommand, AddItemIntoBasketResult>
+{
+    public async Task<AddItemIntoBasketResult> Handle(
+        AddItemIntoBasketCommand command, CancellationToken cancellationToken)
+    {
+        // Lấy thông tin sản phẩm từ Catalog Module
+        var result = await sender.Send(
+            new GetProductByIdQuery(command.ShoppingCartItem.ProductId),
+            cancellationToken);
+
+        var productName = result.Product.Name;
+        var price = result.Product.Price;
+
+        // Lấy giỏ hàng với tracking (asNoTracking = false)
+        var basket = await repository.GetBasket(
+            command.Username, asNoTracking: false, cancellationToken);
+
+        // Thêm item với thông tin chính xác từ Catalog
+        basket.AddItem(command.ShoppingCartItem.ProductId,
+            command.ShoppingCartItem.Quantity,
+            price,
+            productName);
+
+        await repository.SaveChangesAsync(cancellationToken);
+
+        return new AddItemIntoBasketResult(basket.Id);
+    }
+}
+```
+
+MediatR tự động tìm handler phù hợp trong Catalog Module (`GetProductByIdHandler`) và thực thi in-process, không qua network.
+
+---
+
+## Evolving Contracts — Phát Triển Contracts Theo Thời Gian
+
+Một trong những thách thức của contracts class library là quản lý sự thay đổi theo thời gian. Khi Catalog Module cần thêm thông tin vào `ProductDto`, tất cả module tham chiếu đều bị ảnh hưởng.
+
+**Best practices**:
+- Chỉ expose vào Catalog.Contracts những method cần được gọi từ module khác (trong trường hợp này chỉ `GetProductById`).
+- Không cần đưa tất cả query/command vào contracts — chỉ đưa những gì được expose để giao tiếp.
+- Khi migrate sang microservices, contracts library có thể được dùng để expose HTTP API, đảm bảo chuyển đổi suôn sẻ.
+
+---
+
+## Tích Hợp Module Catalog Với Catalog.Contracts
+
+Sau khi tạo Catalog.Contracts:
+
+1. **Xóa** `GetProductByIdQuery` và `ProductDto` khỏi Catalog Module
+2. **Thêm** project reference từ Catalog Module → Catalog.Contracts
+3. **Cập nhật** global usings trong Catalog Module
+4. Catalog Module handler vẫn hoạt động bình thường vì query/result type giờ đến từ contracts
+
+```csharp
+// Catalog Module - GetProductByIdHandler.cs
+public class GetProductByIdHandler(CatalogDbContext dbContext)
+    : IQueryHandler<GetProductByIdQuery, GetProductByIdResult>
+{
+    public async Task<GetProductByIdResult> Handle(
+        GetProductByIdQuery query, CancellationToken cancellationToken)
+    {
+        var product = await dbContext.Products
+            .AsNoTracking()
+            .SingleOrDefaultAsync(x => x.Id == query.Id, cancellationToken);
+
+        if (product is null)
+            throw new ProductNotFoundException(query.Id);
+
+        return new GetProductByIdResult(product.Adapt<ProductDto>());
+    }
+}
+```
+
+---
+
+## Tổng Kết
+
+Giao tiếp đồng bộ giữa các module trong Modular Monolith thông qua Catalog.Contracts và MediatR in-process calls là một giải pháp mạnh mẽ:
+
+- **Loose coupling**: Basket Module không tham chiếu trực tiếp Catalog Module
+- **Strong typing**: Compile-time checking đảm bảo tính nhất quán
+- **Hiệu suất cao**: In-process calls không có network overhead
+- **Dễ migrate**: Khi chuyển sang microservices, contracts library có thể được dùng để expose HTTP API
+
+Đây là cách tiếp cận được khuyến nghị để xây dựng giao tiếp đồng bộ trong kiến trúc Modular Monolith, tuân thủ Dependency Inversion Principle và chuẩn bị sẵn cho tương lai khi hệ thống cần scale lên microservices.

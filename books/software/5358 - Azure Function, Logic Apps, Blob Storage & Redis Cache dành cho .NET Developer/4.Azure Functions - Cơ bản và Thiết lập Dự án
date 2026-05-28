@@ -1,0 +1,174 @@
+## Giới thiệu Azure Function
+
+Azure Function là một dịch vụ điện toán serverless cho phép bạn chạy code theo sự kiện mà không cần quản lý hạ tầng. Bạn có thể viết các function bằng nhiều ngôn ngữ khác nhau và chỉ trả tiền cho thời gian code của bạn thực sự chạy.
+
+## Thiết lập Web Project
+
+Trong solution `Azure Fundamentals`, tạo một folder mới `Azure Function Example` và thêm dự án MVC mới với tên `Azure Function Web`.
+
+Tạo model `SalesRequest` trong Models:
+```csharp
+public class SalesRequest
+{
+    public int? Id { get; set; }
+    public string? Name { get; set; }
+    public string? Email { get; set; }
+    public string? PhoneNumber { get; set; }
+    public string? Status { get; set; }
+}
+```
+
+Trang index hiển thị form với các trường Name, Email, Phone Number và Resume upload cùng nút Submit.
+
+## Các loại Hosting Plan cho Azure Function
+
+Khi tạo Function App trên Azure Portal, bạn có thể chọn giữa nhiều hosting plan:
+
+- **Flex Consumption Plan:** Mới nhất, hỗ trợ Always Ready để tránh cold start, tối đa 1000 instances
+- **Consumption Plan:** Kế hoạch tiêu chuẩn lâu đời, 1 triệu lần thực thi đầu tiên mỗi tháng là miễn phí, tối đa 50 instances, timeout tối đa 5 phút
+- **Premium Plan:** Tránh cold start, timeout đến 60 phút, phù hợp cho ứng dụng enterprise
+- **App Service Plan:** Chi phí cố định với server riêng
+- **Container App Environment:** Phù hợp cho microservices
+
+Chúng ta sẽ dùng **Consumption Plan** vì 1 triệu lần thực thi miễn phí là đủ cho việc học.
+
+## Tạo Azure Function đầu tiên trong Visual Studio
+
+Cài đặt Azure Development workload trong Visual Studio Installer nếu chưa có.
+
+Tạo project mới, chọn loại **Azure Functions**:
+1. Đặt tên project: `TangyAzureFunction`
+2. Chọn **dotnet 9 Isolated** (KHÔNG chọn In-Process vì sẽ không được hỗ trợ sau tháng 11/2026)
+3. Chọn trigger: **HTTP trigger**
+4. Authorization level: **Anonymous**
+
+### Cấu trúc project Azure Function
+
+- **Function1.cs** - File function chính
+- **Program.cs** - Nơi cấu hình services (mới từ Isolated model)
+- **local.settings.json** - Cấu hình cục bộ (connection strings, settings)
+- **host.json** - Cài đặt runtime của function app
+
+### Giải thích Function đầu tiên
+
+```csharp
+public class Function1
+{
+    private readonly ILogger<Function1> _logger;
+
+    public Function1(ILogger<Function1> logger)
+    {
+        _logger = logger;
+    }
+
+    [Function("Function1")]
+    public IActionResult Run(
+        [HttpTrigger(AuthorizationLevel.Anonymous, "get", "post")] HttpRequest req)
+    {
+        _logger.LogInformation("HTTP trigger function processed a request.");
+        return new OkObjectResult("Welcome to Azure Functions!");
+    }
+}
+```
+
+- **[Function("Function1")]:** Đặt tên cho function
+- **[HttpTrigger]:** Xác định đây là HTTP trigger, chấp nhận GET và POST
+- Khi URL được gọi, function được thực thi và trả về response
+
+Chạy function và mở URL trong browser, bạn sẽ thấy "Welcome to Azure Functions!"
+
+## Đổi tên và Thiết kế Business Flow
+
+Đổi tên `Function1` thành `OnSalesUploadWriteToQueue` để phản ánh mục đích thực tế.
+
+**Business flow mong muốn:**
+1. Người dùng điền form và nhấn Apply trong web application
+2. Web app gọi Azure Function qua HTTP
+3. Azure Function nhận dữ liệu và ghi vào Queue
+4. Một function khác lắng nghe Queue và xử lý dữ liệu
+
+## Azure Queue Storage
+
+Queue là cấu trúc FIFO (First In, First Out) trong Azure Storage. Bạn có thể thêm messages vào queue và đọc chúng sau. Queue rất hữu ích cho các tình huống xử lý bất đồng bộ.
+
+Để làm việc với Queue, cập nhật `local.settings.json` với connection string của storage account:
+
+```json
+{
+  "IsEncrypted": false,
+  "Values": {
+    "AzureWebJobsStorage": "DefaultEndpointsProtocol=https;AccountName=...;...",
+    "FUNCTIONS_WORKER_RUNTIME": "dotnet-isolated"
+  }
+}
+```
+
+## Gọi Azure Function từ Web Project
+
+Thêm HTTP Client vào web project trong `Program.cs`:
+```csharp
+builder.Services.AddHttpClient();
+```
+
+Trong `HomeController`, inject `IHttpClientFactory` và gọi Azure Function:
+
+```csharp
+using var client = _httpClientFactory.CreateClient();
+client.BaseAddress = new Uri("http://localhost:7071");
+
+var content = new StringContent(
+    JsonConvert.SerializeObject(salesRequest),
+    System.Text.Encoding.UTF8,
+    "application/json"
+);
+
+var response = await client.PostAsync("/api/OnSalesUploadWriteToQueue", content);
+```
+
+Chạy cả hai project đồng thời bằng cách cấu hình Multiple Startup Projects trong Solution Properties.
+
+## Nhận và Xử lý SalesRequest trong Azure Function
+
+Tạo model `SalesRequest` tương tự trong Azure Function project:
+
+```csharp
+public class SalesRequest
+{
+    public int? Id { get; set; }
+    public string? Name { get; set; }
+    public string? Email { get; set; }
+    public string? PhoneNumber { get; set; }
+    public string? Status { get; set; }
+}
+```
+
+Trong function, đọc và deserialize request body:
+
+```csharp
+string requestBody = await new StreamReader(req.Body).ReadToEndAsync();
+SalesRequest? data = JsonConvert.DeserializeObject<SalesRequest>(requestBody);
+```
+
+## Output Binding - Ghi vào Queue
+
+Thêm NuGet package:
+```
+Microsoft.Azure.Functions.Worker.Extensions.Storage.Queues
+```
+
+Thêm `[QueueOutput]` attribute để binding output vào Queue:
+
+```csharp
+[Function("OnSalesUploadWriteToQueue")]
+[QueueOutput("sales-request-inbound", Connection = "AzureWebJobsStorage")]
+public SalesRequest Run(
+    [HttpTrigger(AuthorizationLevel.Anonymous, "get", "post")] HttpRequest req)
+{
+    // ...
+    return data ?? new SalesRequest();
+}
+```
+
+Khi function trả về `SalesRequest`, Azure tự động ghi nó vào Queue có tên `sales-request-inbound` trong storage account được chỉ định.
+
+Chạy ứng dụng, điền form và nhấn Apply. Trong Azure Portal, vào storage account > Queues, bạn sẽ thấy queue `sales-request-inbound` được tạo tự động với message đã ghi vào. Azure Function đã đơn giản hóa toàn bộ quá trình này với chỉ một attribute - điều mà thông thường sẽ cần rất nhiều code trong ứng dụng .NET thông thường.

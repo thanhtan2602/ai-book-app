@@ -1,0 +1,178 @@
+## Azure Storage là gì?
+
+Microsoft cung cấp một giải pháp mạnh mẽ cho nhu cầu lưu trữ dữ liệu hiện đại với Azure Storage. Khi công nghệ web phát triển, khối lượng dữ liệu chúng ta tạo ra tăng nhanh chóng, tạo ra nhu cầu mạnh mẽ về giải pháp lưu trữ đám mây hiện đại, có khả năng mở rộng và đáng tin cậy. Azure Storage đáp ứng nhu cầu này.
+
+Bạn có thể nghĩ về Azure Storage như một ổ cứng vật lý - nơi bạn lưu trữ tất cả dữ liệu - nhưng trên đám mây. Nói đơn giản, đây là dịch vụ lưu trữ dữ liệu của bạn trên cloud. Để sử dụng Azure Storage, bạn sẽ cần tạo tài khoản Azure trên Azure Portal và sau đó tạo Azure Storage.
+
+### Những lợi ích chính của Azure Storage
+
+**Tính khả dụng cao và độ bền:** Dữ liệu được lưu trữ trên Azure tự động được nhân bản trên các vị trí địa lý khác nhau. Điều này đảm bảo rằng ngay cả khi xảy ra lỗi phần cứng hoặc thảm họa tự nhiên, dữ liệu của bạn vẫn an toàn và có thể truy cập.
+
+**Bảo mật dữ liệu:** Azure Storage sử dụng Shared Access Signature (SAS) để kiểm soát và hạn chế quyền truy cập dữ liệu. Chúng ta sẽ học cách tạo và quản lý các khóa SAS này sau trong khóa học.
+
+**Khả năng mở rộng:** Azure Storage tự động điều chỉnh để đáp ứng nhu cầu sử dụng đỉnh, đảm bảo hiệu suất liền mạch.
+
+**Khả năng truy cập toàn cầu:** Azure Storage cung cấp nhiều tùy chọn để truy cập dữ liệu của bạn trên toàn cầu, đảm bảo trải nghiệm nhất quán cho người dùng ở khắp mọi nơi.
+
+## Các loại Azure Storage
+
+Azure cung cấp nhiều loại storage khác nhau:
+
+**Blob Storage** - Dịch vụ được thiết kế để lưu trữ dữ liệu phi cấu trúc trên đám mây dưới dạng objects hoặc blobs. Bạn có thể sử dụng blob storage để lưu trữ bất kỳ loại dữ liệu văn bản hoặc nhị phân nào như tài liệu, hình ảnh, video hoặc trình cài đặt ứng dụng. Blob storage sẽ là trọng tâm chính của chúng ta trong khóa học này.
+
+**File Storage** - Azure Files cung cấp các file share đám mây được quản lý hoàn toàn, có thể truy cập từ bất kỳ đâu bằng giao thức SMB (Server Message Block) tiêu chuẩn. Rất phù hợp cho các tình huống cần chia sẻ hệ thống file trên đám mây.
+
+**Table Storage** - Là một phần của Azure Cosmos DB, Azure Table Storage cho phép bạn lưu trữ dữ liệu NoSQL có cấu trúc. Nhẹ và hoàn hảo cho các tình huống yêu cầu đọc và ghi nhanh mà không có overhead của cơ sở dữ liệu quan hệ.
+
+**Queue Storage** - Dịch vụ nhắn tin được thiết kế để lưu trữ và truy xuất số lượng lớn messages qua các lời gọi đã được xác thực qua HTTP hoặc HTTPS. Thường được sử dụng trong kiến trúc microservices cho nhắn tin bất đồng bộ giữa các thành phần ứng dụng.
+
+### Access Tier trong Blob Storage
+
+Khi tạo blob storage account, bạn sẽ được yêu cầu chọn access tier tùy theo tần suất bạn muốn truy cập dữ liệu:
+
+- **Hot tier:** Độ trễ thấp nhất. Phù hợp cho dữ liệu cần truy cập thường xuyên như hình ảnh, PDF hoặc file media. Hiệu suất cao hơn nhưng chi phí cao hơn so với cold tier.
+- **Cold tier:** Tối ưu hóa cho dữ liệu ít được truy cập. Độ trễ cao hơn và chi phí thấp hơn. Phù hợp cho dữ liệu sao lưu hoặc tài liệu ít được truy cập.
+- **Archive tier:** Thiết kế cho dữ liệu rất hiếm khi được truy cập. Chi phí lưu trữ rẻ nhất, nhưng việc truy xuất có thể chậm và yêu cầu rehydration. Dùng cho dữ liệu cần giữ lâu dài cho mục đích tuân thủ, di sản hoặc sao lưu.
+
+## Kiến trúc phân cấp của Azure Blob Storage
+
+Khi làm việc với blob storage, chúng ta sẽ tạo storage account với một tên cụ thể. Tên này phải là duy nhất trên toàn bộ Azure.
+
+Bên trong một blob storage, mỗi blob cần được lưu trữ trong một **blob container**. Ví dụ, chúng ta có thể tạo ba container: `dotnet-mastery-pdf`, `dotnet-mastery-images` và `dotnet-mastery-others`. Số lượng container bạn có thể tạo trong một Azure Blob storage là không giới hạn.
+
+Bên trong container, chúng ta có **blobs** - dữ liệu thực sự được lưu trữ. Chúng ta có thể thiết lập quyền ở cấp container hoặc cấp blob:
+
+- **Private:** Không ai có thể đọc blobs hay container.
+- **Blob:** Có thể đọc tất cả blobs trong container, nhưng không thể đọc thông tin của container.
+- **Container:** Cấp quyền đọc đầy đủ cho container, bao gồm cả danh sách blobs bên trong.
+
+Mỗi blob khi được lưu vào storage sẽ nhận được một URL duy nhất. URL có dạng: `https://{storage-account}.blob.core.windows.net/{container}/{blob-name}`.
+
+Các thư mục bên trong container là **thư mục ảo** - không phải thư mục vật lý thực sự. Tất cả mọi thứ được lưu trong một vị trí duy nhất, nhưng URL sẽ được thay đổi để phản ánh cấu trúc thư mục.
+
+## Tải lên Blob qua Azure Portal
+
+Trong storage account, tab bạn sẽ sử dụng thường xuyên nhất là **Data Storage**. Tại đây bạn có thể thấy: Containers, File Shares, Queues và Tables.
+
+Để tải file lên, bạn cần điều hướng đến Containers và tạo một container mới. Khi tạo container, bạn có thể thiết lập access level:
+
+- **Private:** Không có quyền truy cập ẩn danh
+- **Blob:** Quyền đọc ẩn danh chỉ cho blobs
+- **Container:** Quyền đọc ẩn danh cho cả container và blobs
+
+Mỗi blob có thể thuộc các loại khác nhau:
+- **Block blob:** Lưu trữ dữ liệu văn bản hoặc nhị phân. Dữ liệu được tải lên theo từng block. Lý tưởng cho tài liệu, hình ảnh, video.
+- **Page blob:** Lưu trữ file có thể truy cập ngẫu nhiên. Thường được dùng cho Azure VM disk.
+- **Append blob:** Tối ưu hóa cho thao tác append. Phù hợp cho logging hoặc audit trails.
+
+## Xây dựng ứng dụng .NET tương tác với Blob Storage
+
+### Thiết lập dự án
+
+Chúng ta tạo một dự án MVC mới với tên `Azure Blob Project` thuộc solution `Azure Fundamentals`.
+
+Sau khi tạo project, cần cài đặt NuGet package:
+```
+Azure.Storage.Blobs
+```
+
+Thêm connection string vào `appsettings.json`:
+```json
+{
+  "BlobConnection": "DefaultEndpointsProtocol=https;AccountName=...;AccountKey=...;EndpointSuffix=core.windows.net"
+}
+```
+
+Đăng ký BlobServiceClient trong `Program.cs`:
+```csharp
+builder.Services.AddSingleton(new BlobServiceClient(
+    builder.Configuration.GetValue<string>("BlobConnection")
+));
+```
+
+### Container Service
+
+Tạo interface `IContainerService` trong thư mục `Services`:
+```csharp
+public interface IContainerService
+{
+    Task<List<string>> GetAllContainers();
+    Task CreateContainer(string containerName);
+    Task DeleteContainer(string containerName);
+}
+```
+
+Implementation `ContainerService` sử dụng dependency injection để nhận `BlobServiceClient`:
+
+- **GetAllContainers:** Dùng `GetBlobContainersAsync()` để lấy danh sách tất cả container
+- **CreateContainer:** Dùng `GetBlobContainerClient(name)` rồi `CreateIfNotExistsAsync()`
+- **DeleteContainer:** Dùng `GetBlobContainerClient(name)` rồi `DeleteIfExistsAsync()`
+
+Đăng ký service trong `Program.cs`:
+```csharp
+builder.Services.AddSingleton<IContainerService, ContainerService>();
+```
+
+### Blob Service
+
+Tương tự, tạo `IBlobService` với các endpoint:
+
+- **GetAllBlobs(containerName):** Lấy tên tất cả blobs trong container
+- **GetBlob(name, containerName):** Lấy absolute URI của một blob
+- **CreateBlob(name, file, containerName):** Tải file lên blob storage
+- **DeleteBlob(name, containerName):** Xóa blob
+- **GetAllBlobsWithUri(containerName):** Lấy danh sách blobs kèm URI và metadata
+
+Implementation `BlobService` dùng `BlobContainerClient` và `BlobClient` để tương tác với storage:
+
+```csharp
+// Upload blob
+var blobClient = containerClient.GetBlobClient(fileName);
+var headers = new BlobHttpHeaders { ContentType = file.ContentType };
+await blobClient.UploadAsync(file.OpenReadStream(), headers);
+```
+
+```csharp
+// Delete blob
+var blobClient = containerClient.GetBlobClient(name);
+return await blobClient.DeleteIfExistsAsync();
+```
+
+### Controller và Views
+
+**ContainerController** inject `IContainerService` và có các action:
+- `Index` - Hiển thị danh sách container
+- `Create` (GET/POST) - Tạo container mới
+- `Delete` - Xóa container
+
+**BlobController** inject `IBlobService` và có các action:
+- `Manage(containerName)` - Hiển thị blobs trong container
+- `AddFile` (GET/POST) - Tải file lên
+- `ViewFile(name, containerName)` - Xem file (redirect đến URL)
+- `DeleteFile(name, containerName)` - Xóa file
+
+### Hiển thị cấu trúc phân cấp trên trang chủ
+
+Trên trang Home, chúng ta hiển thị tất cả container và blobs bên trong:
+
+```csharp
+public async Task<List<string>> GetAllContainersAndBlobs()
+{
+    var result = new List<string>();
+    result.Add($"--- {_blobClient.AccountName} ---");
+    
+    await foreach (var container in _blobClient.GetBlobContainersAsync())
+    {
+        result.Add($"  > {container.Name}");
+        var containerClient = _blobClient.GetBlobContainerClient(container.Name);
+        
+        await foreach (var blob in containerClient.GetBlobsAsync())
+        {
+            result.Add($"    - {blob.Name}");
+        }
+    }
+    return result;
+}
+```
+
+Nhờ vậy trang chủ sẽ hiển thị storage account name, các container và blobs bên trong theo dạng cây phân cấp, giúp bạn dễ dàng theo dõi toàn bộ cấu trúc storage của mình.

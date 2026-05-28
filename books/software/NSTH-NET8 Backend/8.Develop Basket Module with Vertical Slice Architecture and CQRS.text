@@ -1,0 +1,299 @@
+## Phát triển Basket Module với Vertical Slice Architecture và CQRS
+
+Sau khi hoàn thiện Catalog module, chúng ta chuyển sang phát triển Basket module — module quản lý giỏ hàng của người dùng. Basket module được xây dựng với kiến trúc tương tự Catalog module: Vertical Slice Architecture, DDD (Domain-Driven Design), CQRS và MediatR.
+
+---
+
+## Phân tích Domain của Basket Module
+
+### Domain Models
+
+Basket module có ba domain model chính:
+
+- **ShoppingCart**: Giỏ hàng của người dùng, chứa danh sách các item
+- **ShoppingCartItem**: Đại diện cho từng sản phẩm trong giỏ hàng
+- **BasketCheckout**: Dữ liệu dùng trong quá trình thanh toán
+
+Quan hệ giữa chúng: `ShoppingCart` có quan hệ 1-1 với user, và quan hệ 1-nhiều với `ShoppingCartItem`.
+
+### Application Use Cases
+
+Các use case chính của Basket module:
+
+- Lấy giỏ hàng cùng với các item (Get Shopping Cart with Items)
+- Tạo hoặc cập nhật giỏ hàng
+- Thêm item vào giỏ hàng
+- Xóa item khỏi giỏ hàng
+- Cập nhật số lượng hoặc giá item
+- Xóa toàn bộ giỏ hàng
+
+### Giao tiếp giữa các Module
+
+- **Đồng bộ (Synchronous)**: Khi thêm item vào giỏ, sẽ lấy giá sản phẩm từ Catalog module theo thời gian thực.
+- **Bất đồng bộ (Asynchronous)**: Khi checkout giỏ hàng, sẽ publish event lên RabbitMQ. Ngoài ra, khi Catalog module thay đổi giá sản phẩm, Basket module sẽ nhận event và cập nhật giá tương ứng trong giỏ hàng.
+
+### REST API Endpoints
+
+| Method | URI | Chức năng |
+|--------|-----|-----------|
+| GET | /basket/{username} | Lấy giỏ hàng của user |
+| POST | /basket/{username} | Tạo hoặc cập nhật giỏ hàng |
+| DELETE | /basket/{username} | Xóa giỏ hàng |
+| POST | /basket/{username}/items | Thêm item vào giỏ |
+| DELETE | /basket/{username}/items/{itemId} | Xóa item khỏi giỏ |
+| POST | /basket/checkout | Thanh toán giỏ hàng |
+
+---
+
+## Phân tích kỹ thuật
+
+### Kiến trúc và Pattern
+
+- **Vertical Slice Architecture**: Giống Catalog module, mỗi feature tự đóng gói hoàn toàn
+- **Repository Pattern**: Cung cấp abstraction cho tầng persistence, tách domain khỏi infrastructure
+- **CQRS với MediatR**: Tách biệt Commands và Queries
+- **Minimal APIs với Carter**: Expose HTTP endpoints
+- **Mapster**: Ánh xạ object
+- **FluentValidation**: Validate input
+
+### Công nghệ sử dụng
+
+- MediatR (CQRS)
+- Carter (Minimal API routing)
+- Entity Framework Core + Npgsql (PostgreSQL)
+- Mapster (Object mapping)
+- FluentValidation (Validation)
+- StackExchange.Redis (Distributed caching — các chương sau)
+- MassTransit + RabbitMQ (Messaging — các chương sau)
+
+### Cấu trúc thư mục
+
+```
+Basket/
+├── basket/                     # Feature folder
+│   ├── Dtos/
+│   │   ├── ShoppingCartDto.cs
+│   │   └── ShoppingCartItemDto.cs
+│   ├── EventHandlers/
+│   ├── Exceptions/
+│   │   └── BasketNotFoundException.cs
+│   ├── Features/
+│   │   ├── GetBasket/
+│   │   │   ├── GetBasketHandler.cs
+│   │   │   └── GetBasketEndpoint.cs
+│   │   ├── CreateBasket/
+│   │   ├── DeleteBasket/
+│   │   ├── AddItemIntoBasket/
+│   │   ├── RemoveItemFromBasket/
+│   │   └── CheckoutBasket/
+│   └── Models/
+│       ├── ShoppingCart.cs
+│       └── ShoppingCartItem.cs
+├── Data/
+│   ├── BasketDbContext.cs
+│   ├── Configurations/
+│   └── Migrations/
+└── BasketModule.cs
+```
+
+---
+
+## ShoppingCart Domain Entity
+
+```csharp
+public class ShoppingCart : Aggregate<Guid>
+{
+    public string UserName { get; private set; } = default!;
+
+    private readonly List<ShoppingCartItem> _items = new();
+    public IReadOnlyList<ShoppingCartItem> Items => _items.AsReadOnly();
+
+    public decimal TotalPrice =>
+        Items.Sum(x => x.Price * x.Quantity);
+
+    // Factory method — entity tự khởi tạo chính mình (rich domain model)
+    public static ShoppingCart Create(Guid id, string userName)
+    {
+        ArgumentException.ThrowIfNullOrEmpty(userName);
+
+        var shoppingCart = new ShoppingCart
+        {
+            Id = id,
+            UserName = userName
+        };
+        return shoppingCart;
+    }
+
+    public void AddItem(
+        Guid productId, int quantity, string color,
+        decimal price, string productName)
+    {
+        ArgumentOutOfRangeException.ThrowIfNegativeOrZero(quantity);
+        ArgumentOutOfRangeException.ThrowIfNegativeOrZero(price);
+
+        var existingItem = Items.FirstOrDefault(x => x.ProductId == productId);
+        if (existingItem != null)
+        {
+            // Nếu sản phẩm đã có trong giỏ — tăng số lượng
+            existingItem.Quantity += quantity;
+        }
+        else
+        {
+            // Thêm item mới vào giỏ
+            var newItem = new ShoppingCartItem(
+                Guid.NewGuid(), productId, quantity, color, price, productName);
+            _items.Add(newItem);
+        }
+    }
+
+    public void RemoveItem(Guid productId)
+    {
+        var item = Items.FirstOrDefault(x => x.ProductId == productId);
+        if (item is not null)
+            _items.Remove(item);
+    }
+}
+```
+
+Đây là mô hình **Rich Domain Model** theo DDD: entity không chỉ là data container mà còn chứa business logic. `ShoppingCart` tự quản lý trạng thái và các item của mình.
+
+---
+
+## ShoppingCartItem Domain Entity
+
+```csharp
+public class ShoppingCartItem : Entity<Guid>
+{
+    public Guid ShoppingCartId { get; private set; }
+    public Guid ProductId { get; private set; }
+    public int Quantity { get; internal set; }   // internal set — chỉ basket module mới được sửa
+    public string Color { get; private set; } = default!;
+    public decimal Price { get; private set; }   // Giá lấy từ Catalog module
+    public string ProductName { get; private set; } = default!;
+
+    // Internal constructor — chỉ ShoppingCart aggregate mới được tạo item
+    internal ShoppingCartItem(
+        Guid id, Guid shoppingCartId, Guid productId,
+        int quantity, string color, decimal price, string productName)
+    {
+        Id = id;
+        ShoppingCartId = shoppingCartId;
+        ProductId = productId;
+        Quantity = quantity;
+        Color = color;
+        Price = price;
+        ProductName = productName;
+    }
+}
+```
+
+**Điểm quan trọng**:
+
+- Constructor là `internal` — không ai ngoài basket module có thể tạo `ShoppingCartItem` trực tiếp. Chỉ `ShoppingCart.AddItem()` mới được tạo item.
+- `Quantity` có modifier `internal set` — chỉ được thay đổi từ trong cùng assembly (basket module), không thể sửa từ bên ngoài.
+- `Price` và `ProductName` phải đến từ Catalog module, không được set tùy tiện.
+
+---
+
+## Nguyên tắc DDD áp dụng trong Basket
+
+### Aggregate Root
+
+`ShoppingCart` là **Aggregate Root** — đây là cổng duy nhất để truy cập và thay đổi trạng thái của nhóm entity liên quan (`ShoppingCart` + `ShoppingCartItem`).
+
+Không ai được phép:
+- Tạo `ShoppingCartItem` trực tiếp từ bên ngoài (constructor là `internal`)
+- Thêm item vào `_items` list trực tiếp (list là `private readonly`)
+- Xóa item trực tiếp (chỉ qua `RemoveItem()`)
+
+Tất cả thay đổi đều phải đi qua các phương thức công khai của aggregate (`AddItem`, `RemoveItem`). Điều này đảm bảo các business rules luôn được tuân thủ.
+
+### Rich Domain Model vs Anemic Domain Model
+
+- **Anemic Domain Model**: Entity chỉ có properties (getter/setter), logic nằm trong service/handler
+- **Rich Domain Model**: Entity chứa cả dữ liệu lẫn hành vi, tự thực thi business rules
+
+Basket module dùng Rich Domain Model: khi thêm item, validation (số lượng > 0, giá > 0) và logic kiểm tra item đã tồn tại đều nằm trong `ShoppingCart.AddItem()`, không phải trong handler.
+
+---
+
+## Domain Events
+
+Khi giỏ hàng được checkout, entity raise một domain event:
+
+```csharp
+public class ShoppingCart : Aggregate<Guid>
+{
+    // ...
+
+    public void Checkout(/* checkout data */)
+    {
+        // Raise domain event
+        AddDomainEvent(new BasketCheckoutEvent(this.UserName /* ... */));
+    }
+}
+```
+
+Domain event này sau đó được MediatR xử lý qua `INotificationHandler`, có thể dẫn đến integration event gửi qua RabbitMQ (sẽ phát triển ở các chương sau).
+
+---
+
+## Integration Events từ Catalog Module
+
+`ShoppingCartItem.Price` và `ShoppingCartItem.ProductName` phải luôn đồng bộ với Catalog module. Khi Catalog module thay đổi giá sản phẩm, nó raise `ProductPriceChangedDomainEvent` → integration event → Basket module nhận và cập nhật giá trong giỏ hàng của tất cả user đang có sản phẩm đó.
+
+Đây là giao tiếp **bất đồng bộ** giữa các module — sẽ triển khai trong các chương về messaging.
+
+---
+
+## BasketModule Registration
+
+```csharp
+public static class BasketModule
+{
+    public static IServiceCollection AddBasketModule(
+        this IServiceCollection services, IConfiguration configuration)
+    {
+        // 1. API Endpoint services (Carter, MediatR — đăng ký ở Program.cs chung)
+
+        // 2. Application use case services
+        services.AddValidatorsFromAssembly(Assembly.GetExecutingAssembly());
+
+        // 3. Data infrastructure services
+        var connectionString = configuration.GetConnectionString("Database");
+        services.AddDbContext<BasketDbContext>(options =>
+        {
+            options.UseNpgsql(connectionString);
+            options.AddInterceptors(
+                new AuditableEntityInterceptor(),
+                new DispatchDomainEventsInterceptor(/* ... */)
+            );
+        });
+
+        return services;
+    }
+
+    public static IApplicationBuilder UseBasketModule(this IApplicationBuilder app)
+    {
+        // Data infrastructure
+        app.UseMigration<BasketDbContext>();
+
+        return app;
+    }
+}
+```
+
+---
+
+## Tổng kết
+
+Trong chương này, chúng ta đã:
+
+- Phân tích đầy đủ domain của Basket module: entities, use cases, endpoints, data stores
+- Thiết kế `ShoppingCart` và `ShoppingCartItem` theo mô hình DDD Rich Domain Model
+- Áp dụng nguyên tắc Aggregate Root: `ShoppingCart` là cổng duy nhất để thao tác với items
+- Hiểu tại sao `ShoppingCartItem` constructor là `internal` và `Quantity` có `internal set`
+- Định nghĩa folder structure theo Vertical Slice Architecture
+- Xác định hai loại giao tiếp: đồng bộ (lấy giá từ Catalog) và bất đồng bộ (checkout event, price change event)
+
+Trong các chương tiếp theo, chúng ta sẽ tiếp tục phát triển tầng infrastructure, application use cases và API endpoints cho Basket module.

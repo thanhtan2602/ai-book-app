@@ -1,0 +1,319 @@
+## Phát triển Catalog API Endpoints với Minimal API, Carter và REPR Design Pattern
+
+Trong chương này, chúng ta sẽ phát triển tầng trình bày (Presentation Layer) cho Catalog module bằng cách expose các REST API endpoint sử dụng thư viện Carter và mô hình thiết kế REPR (Request-Endpoint-Response).
+
+### REPR Design Pattern là gì?
+
+REPR (Request-Endpoint-Response) là một mô hình thiết kế phần mềm dành cho các API endpoint, định nghĩa một luồng đơn giản: **Request → Endpoint → Response**.
+
+- **Request**: Cấu trúc dữ liệu mà endpoint nhận vào từ client
+- **Endpoint**: Logic xử lý được thực thi khi nhận request
+- **Response**: Cấu trúc dữ liệu trả về cho client
+
+REPR áp dụng nguyên tắc Single Responsibility — mỗi endpoint chỉ làm một việc, developers chỉ cần quan tâm đến request và response. Pattern này đặc biệt phù hợp với Minimal APIs trong ASP.NET Core.
+
+---
+
+## Carter Library
+
+ASP.NET Core Minimal APIs (ra mắt từ .NET 6, cải thiện đáng kể trong .NET 8) là cách phổ biến để xây dựng microservices nhỏ gọn và hiệu năng cao. Carter là thư viện mở rộng Minimal APIs, cung cấp cách tổ chức endpoint có cấu trúc hơn.
+
+Carter là một "thin layer" các extension methods trên đầu ASP.NET Core, giúp code rõ ràng và dễ bảo trì hơn. Thay vì định nghĩa tất cả route trong `Program.cs`, Carter cho phép tạo các module riêng biệt implement `ICarterModule`.
+
+### Cài đặt Carter
+
+Carter được cài vào thư viện Shared (dùng chung cho mọi module) và đăng ký trong `Program.cs` của API project:
+
+```csharp
+// Program.cs
+builder.Services.AddCarterWithAssemblies(
+    typeof(CatalogModule).Assembly,
+    typeof(BasketModule).Assembly
+);
+
+app.MapCarter();
+```
+
+Phương thức `AddCarterWithAssemblies` là extension method tự viết, duyệt qua các assembly được truyền vào, tìm tất cả class implement `ICarterModule` và đăng ký vào Carter.
+
+---
+
+## Các Endpoint cần phát triển
+
+| Method | URI | Chức năng |
+|--------|-----|-----------|
+| GET | /products | Lấy danh sách tất cả sản phẩm |
+| GET | /products/{id} | Lấy sản phẩm theo ID |
+| GET | /products/{category} | Lấy sản phẩm theo danh mục |
+| POST | /products | Tạo sản phẩm mới |
+| PUT | /products | Cập nhật sản phẩm |
+| DELETE | /products/{id} | Xóa sản phẩm |
+
+---
+
+## CreateProduct Endpoint
+
+```csharp
+public record CreateProductRequest(ProductDto Product);
+public record CreateProductResponse(Guid Id);
+
+public class CreateProductEndpoint : ICarterModule
+{
+    public void AddRoutes(IEndpointRouteBuilder app)
+    {
+        app.MapPost("/products", async (
+            CreateProductRequest request, ISender sender) =>
+        {
+            var command = request.Adapt<CreateProductCommand>();
+            var result = await sender.Send(command);
+            var response = result.Adapt<CreateProductResponse>();
+            return Results.Created($"/products/{response.Id}", response);
+        })
+        .WithName("CreateProduct")
+        .Produces<CreateProductResponse>(StatusCodes.Status201Created)
+        .ProducesProblem(StatusCodes.Status400BadRequest)
+        .WithSummary("Create Product")
+        .WithDescription("Create a new product in the catalog");
+    }
+}
+```
+
+Luồng xử lý:
+1. Client gửi `CreateProductRequest` (chứa `ProductDto`)
+2. Request được ánh xạ sang `CreateProductCommand` bằng Mapster
+3. Command được gửi qua MediatR `sender.Send()`
+4. MediatR kích hoạt `CreateProductHandler`, thực thi logic nghiệp vụ
+5. Kết quả (`CreateProductResult`) được ánh xạ sang `CreateProductResponse`
+6. Trả về HTTP 201 Created kèm response body
+
+---
+
+## UpdateProduct Endpoint
+
+```csharp
+public record UpdateProductRequest(ProductDto Product);
+public record UpdateProductResponse(bool IsSuccess);
+
+public class UpdateProductEndpoint : ICarterModule
+{
+    public void AddRoutes(IEndpointRouteBuilder app)
+    {
+        app.MapPut("/products", async (
+            UpdateProductRequest request, ISender sender) =>
+        {
+            var command = request.Adapt<UpdateProductCommand>();
+            var result = await sender.Send(command);
+            var response = result.Adapt<UpdateProductResponse>();
+            return Results.Ok(response);
+        })
+        .WithName("UpdateProduct")
+        .Produces<UpdateProductResponse>(StatusCodes.Status200OK)
+        .ProducesProblem(StatusCodes.Status400BadRequest)
+        .ProducesProblem(StatusCodes.Status404NotFound)
+        .WithSummary("Update Product")
+        .WithDescription("Update an existing product");
+    }
+}
+```
+
+Lưu ý: endpoint PUT không có `{id}` trong URL vì ID đã nằm trong `ProductDto` bên trong request body.
+
+---
+
+## DeleteProduct Endpoint
+
+```csharp
+public record DeleteProductResponse(bool IsSuccess);
+
+public class DeleteProductEndpoint : ICarterModule
+{
+    public void AddRoutes(IEndpointRouteBuilder app)
+    {
+        app.MapDelete("/products/{id}", async (
+            Guid id, ISender sender) =>
+        {
+            // Không cần request record vì ID lấy trực tiếp từ route parameter
+            var result = await sender.Send(new DeleteProductCommand(id));
+            var response = result.Adapt<DeleteProductResponse>();
+            return Results.Ok(response);
+        })
+        .WithName("DeleteProduct")
+        .Produces<DeleteProductResponse>(StatusCodes.Status200OK)
+        .ProducesProblem(StatusCodes.Status400BadRequest)
+        .ProducesProblem(StatusCodes.Status404NotFound)
+        .WithSummary("Delete Product")
+        .WithDescription("Delete a product by ID");
+    }
+}
+```
+
+---
+
+## GetProducts Endpoint
+
+```csharp
+public record GetProductsResponse(IEnumerable<ProductDto> Products);
+
+public class GetProductsEndpoint : ICarterModule
+{
+    public void AddRoutes(IEndpointRouteBuilder app)
+    {
+        app.MapGet("/products", async (ISender sender) =>
+        {
+            var result = await sender.Send(new GetProductsQuery());
+            var response = result.Adapt<GetProductsResponse>();
+            return Results.Ok(response);
+        })
+        .WithName("GetProducts")
+        .Produces<GetProductsResponse>(StatusCodes.Status200OK)
+        .WithSummary("Get Products")
+        .WithDescription("Get all products in the catalog");
+    }
+}
+```
+
+---
+
+## GetProductById Endpoint
+
+```csharp
+public record GetProductByIdResponse(ProductDto Product);
+
+public class GetProductByIdEndpoint : ICarterModule
+{
+    public void AddRoutes(IEndpointRouteBuilder app)
+    {
+        app.MapGet("/products/{id}", async (
+            Guid id, ISender sender) =>
+        {
+            var result = await sender.Send(new GetProductByIdQuery(id));
+            var response = result.Adapt<GetProductByIdResponse>();
+            return Results.Ok(response);
+        })
+        .WithName("GetProductById")
+        .Produces<GetProductByIdResponse>(StatusCodes.Status200OK)
+        .ProducesProblem(StatusCodes.Status400BadRequest)
+        .WithSummary("Get Product by ID");
+    }
+}
+```
+
+---
+
+## GetProductsByCategory Endpoint
+
+```csharp
+public record GetProductsByCategoryResponse(IEnumerable<ProductDto> Products);
+
+public class GetProductsByCategoryEndpoint : ICarterModule
+{
+    public void AddRoutes(IEndpointRouteBuilder app)
+    {
+        app.MapGet("/products/{category}", async (
+            string category, ISender sender) =>
+        {
+            var result = await sender.Send(new GetProductByCategoryQuery(category));
+            var response = result.Adapt<GetProductsByCategoryResponse>();
+            return Results.Ok(response);
+        })
+        .WithName("GetProductsByCategory")
+        .Produces<GetProductsByCategoryResponse>(StatusCodes.Status200OK)
+        .ProducesProblem(StatusCodes.Status400BadRequest)
+        .WithSummary("Get Products by Category");
+    }
+}
+```
+
+---
+
+## Đăng ký Carter — Extension Method
+
+Để tái sử dụng, chúng ta viết extension method `AddCarterWithAssemblies` trong thư viện Shared:
+
+```csharp
+public static class CarterExtensions
+{
+    public static IServiceCollection AddCarterWithAssemblies(
+        this IServiceCollection services, params Assembly[] assemblies)
+    {
+        services.AddCarter(configurator =>
+        {
+            foreach (var assembly in assemblies)
+            {
+                var modules = assembly.GetTypes()
+                    .Where(t => t.IsAssignableTo(typeof(ICarterModule)))
+                    .ToArray();
+                configurator.WithModules(modules);
+            }
+        });
+        return services;
+    }
+}
+```
+
+Và đăng ký trong `Program.cs`:
+
+```csharp
+// Đăng ký Carter với các assembly của từng module
+builder.Services.AddCarterWithAssemblies(
+    typeof(CatalogModule).Assembly,
+    typeof(BasketModule).Assembly
+);
+
+// ...
+
+// Kích hoạt Carter để expose các endpoint
+app.MapCarter();
+```
+
+Khi thêm module mới, chỉ cần thêm assembly tương ứng vào danh sách tham số.
+
+---
+
+## Kiến trúc tổng thể của một Use Case
+
+Mỗi folder use case (ví dụ: `CreateProduct`) chứa đúng hai file:
+
+1. **`CreateProductHandler.cs`** — Command/Query, Result, và Handler (tầng Application)
+2. **`CreateProductEndpoint.cs`** — Request, Response, và Endpoint (tầng Presentation)
+
+Đây chính là tinh thần của Vertical Slice Architecture: mỗi use case đóng gói đầy đủ từ API đến database, dễ dàng tìm kiếm, đọc hiểu và bảo trì.
+
+---
+
+## Test với Postman
+
+Sau khi đăng ký Carter và MapCarter, chạy ứng dụng và test với Postman:
+
+**POST /products** — Tạo sản phẩm:
+```json
+{
+  "product": {
+    "name": "iPhone 15",
+    "category": ["Electronics"],
+    "description": "Latest iPhone model",
+    "imageFile": "iphone15.jpg",
+    "price": 999.99
+  }
+}
+```
+
+**GET /products** — Lấy danh sách sản phẩm (không cần body)
+
+**PUT /products** — Cập nhật sản phẩm (truyền toàn bộ DTO kèm ID)
+
+**DELETE /products/{id}** — Xóa sản phẩm theo ID trong URL
+
+---
+
+## Tổng kết
+
+Trong chương này, chúng ta đã:
+
+- Hiểu và áp dụng REPR Design Pattern cho Minimal API endpoints
+- Sử dụng Carter để tổ chức endpoint theo `ICarterModule` — giúp code modular và dễ bảo trì
+- Phát triển đầy đủ 6 endpoint cho Catalog module: Create, Update, Delete, GetAll, GetById, GetByCategory
+- Viết `AddCarterWithAssemblies` extension method để đăng ký Carter tập trung cho nhiều module
+- Hiểu rõ luồng Request → Command/Query → Handler → Result → Response với sự kết hợp của Carter, MediatR và Mapster
+
+Mỗi endpoint hoàn toàn tách biệt, tuân theo SRP, và toàn bộ routing được tự động scan và đăng ký bởi Carter khi ứng dụng khởi động.

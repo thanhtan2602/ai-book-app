@@ -1,0 +1,135 @@
+## Tạo Database cục bộ
+
+Để lưu dữ liệu từ Queue vào database, chúng ta cần thiết lập một cơ sở dữ liệu. Bạn có thể sử dụng SQL Server cục bộ hoặc Azure SQL Database.
+
+### Kết nối đến SQL Server cục bộ
+
+Copy server name từ SQL Server Management Studio, sau đó tạo connection string trong `local.settings.json`:
+
+```json
+{
+  "AzureSqlDatabase": "Server=<server-name>;Database=AzureFundamentals;Trusted_Connection=True;TrustServerCertificate=True;"
+}
+```
+
+Tạo bảng `SalesRequest` bằng câu lệnh SQL:
+
+```sql
+CREATE TABLE SalesRequest (
+    Id INT PRIMARY KEY,
+    Name NVARCHAR(255),
+    Email NVARCHAR(255),
+    PhoneNumber NVARCHAR(50),
+    Status NVARCHAR(100)
+);
+```
+
+## Thiết lập Entity Framework trong Azure Function
+
+### Tạo ApplicationDbContext
+
+Trong thư mục `Data`, tạo `ApplicationDbContext`:
+
+```csharp
+public class ApplicationDbContext : DbContext
+{
+    public ApplicationDbContext(DbContextOptions<ApplicationDbContext> options)
+        : base(options) { }
+    
+    public DbSet<SalesRequest> SalesRequests { get; set; }
+    
+    protected override void OnModelCreating(ModelBuilder modelBuilder)
+    {
+        modelBuilder.Entity<SalesRequest>()
+            .HasKey(e => e.Id);
+    }
+}
+```
+
+### Cấu hình trong Program.cs
+
+Cài đặt NuGet packages:
+- `Microsoft.EntityFrameworkCore`
+- `Microsoft.EntityFrameworkCore.SqlServer`
+
+Thêm DbContext trong `Program.cs`:
+
+```csharp
+var connectionString = Environment.GetEnvironmentVariable("AzureSqlDatabase");
+builder.Services.AddDbContext<ApplicationDbContext>(options =>
+    options.UseSqlServer(connectionString)
+);
+```
+
+Lưu ý: Trong Azure Function, chúng ta dùng `Environment.GetEnvironmentVariable()` thay vì `builder.Configuration.GetConnectionString()` để đọc giá trị từ `local.settings.json`.
+
+## Tạo Queue Trigger Function
+
+Thêm Azure Function mới với Queue Trigger:
+
+```csharp
+public class OnQueueTriggerUpdateDatabase
+{
+    private readonly ApplicationDbContext _dbContext;
+    
+    public OnQueueTriggerUpdateDatabase(ApplicationDbContext dbContext)
+    {
+        _dbContext = dbContext;
+    }
+    
+    [Function("OnQueueTriggerUpdateDatabase")]
+    public async Task Run(
+        [QueueTrigger("sales-request-inbound", Connection = "AzureWebJobsStorage")] 
+        QueueMessage message)
+    {
+        string messageBody = message.Body.ToString();
+        var salesRequest = JsonConvert.DeserializeObject<SalesRequest>(messageBody);
+        
+        if (salesRequest != null)
+        {
+            salesRequest.Status = "";
+            _dbContext.SalesRequests.Add(salesRequest);
+            await _dbContext.SaveChangesAsync();
+        }
+        else
+        {
+            _logger.LogWarning("Failed to deserialize message body into SalesRequest.");
+        }
+    }
+}
+```
+
+### Cách hoạt động của Queue Trigger
+
+- Azure Function tự động kiểm tra queue `sales-request-inbound`
+- Khi có message mới, function được kích hoạt
+- Message được deserialize thành `SalesRequest`
+- Dữ liệu được lưu vào SQL database qua Entity Framework
+
+Nếu không chỉ định `Connection`, Azure Function sẽ tự động tìm key `AzureWebJobsStorage` trong `local.settings.json`.
+
+## Tạo Azure SQL Database trên Portal
+
+Để sử dụng SQL database trên Azure:
+
+1. Tìm **SQL Database** trong Azure Portal
+2. Tạo server mới với SQL authentication (SQL admin + password)
+3. Chọn tier phù hợp (cheapest option ~$5/tháng cho development)
+4. Trong **Networking**, bật **Public Endpoint** và **Allow Azure Services**
+5. Thêm IP address cục bộ vào firewall rule
+
+Sau khi tạo, lấy connection string từ **Settings > Connection Strings** và cập nhật vào `local.settings.json`.
+
+## Luồng hoàn chỉnh với hai Azure Functions
+
+**Function 1 - HTTP Trigger:**
+- Nhận SalesRequest từ web application
+- Ghi vào Queue `sales-request-inbound`
+
+**Function 2 - Queue Trigger:**
+- Lắng nghe Queue `sales-request-inbound`
+- Khi có message, deserialize và lưu vào SQL database
+
+Đây là pattern thông dụng trong ứng dụng enterprise: tách biệt việc nhận request và xử lý request, giúp ứng dụng hoạt động bất đồng bộ và có khả năng chịu tải tốt hơn.
+
+Cả hai function hoạt động trong cùng một Function App nhưng với trigger và logic khác nhau, thể hiện khả năng linh hoạt của Azure Function trong việc xử lý nhiều loại sự kiện khác nhau.

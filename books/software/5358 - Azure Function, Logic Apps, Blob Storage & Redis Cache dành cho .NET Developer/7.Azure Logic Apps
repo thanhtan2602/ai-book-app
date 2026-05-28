@@ -1,0 +1,117 @@
+## Logic App là gì?
+
+Azure Logic App là dịch vụ đám mây giúp bạn xây dựng các giải pháp tích hợp mạnh mẽ bằng cách kết nối ứng dụng và dịch vụ một cách liền mạch. Nó cung cấp Visual Designer với hơn 200 connector có sẵn, cho phép người dùng tạo workflow bằng kéo thả đơn giản, không cần viết code.
+
+**Ví dụ thực tế:**
+- Khi có đơn hàng mới trong database → Gửi email thông báo
+- Khi tạo user mới trong Salesforce → Thực hiện action trong SQL database
+- Khi file được upload lên Blob Storage → Sao chép sang Dropbox
+
+### Lợi ích của Logic Apps
+
+- **Hơn 200 connector** sẵn có: Azure Service Bus, Microsoft Outlook, GitHub, Twitter, Salesforce và nhiều hơn nữa
+- **Serverless Architecture:** Azure xử lý toàn bộ hạ tầng backend, scaling và maintenance
+- **No-Code Experience:** Tạo workflow bằng kéo thả trực quan
+- **Monitoring tích hợp:** Xem lịch sử thực thi, lỗi và hiệu suất dễ dàng
+- **Auto-scaling:** Tự động điều chỉnh theo nhu cầu
+- **Liên tục cập nhật** connector và template mới
+
+## Tạo Logic App đầu tiên
+
+### Tạo trên Azure Portal
+
+1. Tìm **Logic Apps** trong Azure Portal
+2. Nhấn **Create** → Chọn **Consumption** plan
+3. Đặt tên: `ENM_logicapp_HTTPRequest`
+4. Chọn Resource Group và Region
+5. Nhấn **Review + Create** rồi **Create**
+
+**Consumption vs Standard:**
+- **Consumption:** Trả theo số lần thực thi, 4000 action đầu tiên miễn phí mỗi tháng, shared compute
+- **Standard:** Giá cố định, dedicated server
+
+### Thiết kế Logic App với HTTP Trigger
+
+Sau khi tạo, vào **Get Started → Edit in Designer**:
+
+1. **Thêm Trigger:** Tìm và chọn "When a HTTP request is received"
+   - URL sẽ được tạo sau khi save
+   - Chọn method: GET
+2. **Thêm Action:** Nhấn `+`, chọn **Response**
+   - Status Code: 200
+   - Body: "Hello from Logic App"
+3. **Save** và copy URL
+4. Dán URL vào browser → Thấy "Hello from Logic App"
+
+Logic App hoàn toàn hoạt động! Bạn cũng có thể nhấn **Run** để test trực tiếp và xem kết quả trong Run History.
+
+## Web Project tích hợp Logic App
+
+Tạo dự án MVC mới `Azure Spooky Logic` với model `SpookyRequest`:
+
+```csharp
+public class SpookyRequest
+{
+    [Required]
+    public string Name { get; set; }
+    [Required]
+    public string Email { get; set; }
+    [Required]
+    public string PhoneNumber { get; set; }
+}
+```
+
+## Lưu dữ liệu vào SQL Database qua Logic App
+
+### Tạo Logic App mới: SpookyRequestEntryInDatabase
+
+1. Tạo Logic App mới với consumption plan
+2. Thêm trigger: **HTTP request received** (POST method)
+3. Thêm action: **SQL Server → Insert Row**
+   - Tạo connection đến Azure SQL Database
+   - Chọn table: `SpookyRequest`
+   - Map các field từ request body vào table columns
+
+### Mapping dữ liệu từ HTTP Request
+
+Sau khi cấu hình request schema, Logic App tự động nhận diện các field trong payload. Bạn chỉ cần nhấp vào từng cột trong **Insert Row** và chọn giá trị tương ứng từ HTTP trigger:
+
+- **Id** → Id từ HTTP body
+- **Name** → Name từ HTTP body
+- **Email** → Email từ HTTP body
+- **PhoneNumber** → PhoneNumber từ HTTP body
+
+### Gọi Logic App từ Web Project
+
+Tương tự như với Azure Function, dùng `HttpClient` để POST dữ liệu:
+
+```csharp
+var json = JsonConvert.SerializeObject(spookyRequest);
+var content = new StringContent(json, Encoding.UTF8, "application/json");
+var response = await client.PostAsync(logicAppUrl, content);
+```
+
+Nhập thông tin vào form và nhấn Apply → Dữ liệu được ghi vào SQL database qua Logic App mà không cần viết một dòng code xử lý nào!
+
+## Gửi Email qua Logic App với SendGrid
+
+Sau khi ghi vào database, thêm action **SendGrid → Send Email**:
+
+1. Tạo connection với SendGrid API key
+2. Cấu hình email:
+   - **From:** Email của bạn
+   - **To:** Email người nhận
+   - **Subject:** "Logic App - New Spooky Request"
+   - **Body:** Sử dụng dynamic content từ HTTP trigger để hiển thị thông tin
+
+Kết quả: Khi user submit form → SQL được cập nhật → Email được gửi tự động. Tất cả trong dưới 5 phút cấu hình!
+
+## Debug và Monitor Logic App
+
+### Run History
+Xem lịch sử thực thi trong **Logic App → Run History**:
+- Thấy tất cả lần chạy, kết quả và thời gian
+- Nhấp vào từng run để xem chi tiết input/output của mỗi step
+
+### Trigger History
+Trong **Trigger History**, bạn thấy cả những lần trigger bị skip (khi không có dữ liệu mới) và những lần thực sự chạy. Điều này giúp phân biệt được khi nào trigger được kích hoạt và khi nào workflow thực sự chạy.

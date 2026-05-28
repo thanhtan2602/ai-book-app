@@ -1,0 +1,238 @@
+Trong phần này, chúng ta sẽ phát triển các application use cases cho Basket Module sử dụng CQRS và MediatR. Chúng ta đã hoàn thành domain và infrastructure cho basket module, giờ đến lúc tập trung vào application layer.
+
+## Cấu trúc Folder cho Basket Module
+
+Basket module có các application use cases được tổ chức trong Vertical Slice Architecture với các feature folders riêng biệt:
+
+```
+Basket/
+├── Basket/
+│   ├── Dtos/
+│   │   ├── ShoppingCartDto.cs
+│   │   └── ShoppingCartItemDto.cs
+│   ├── EventHandlers/
+│   ├── Exceptions/
+│   │   └── BasketNotFoundException.cs
+│   └── Features/
+│       ├── CreateBasket/
+│       │   └── CreateBasketHandler.cs
+│       ├── DeleteBasket/
+│       │   └── DeleteBasketHandler.cs
+│       ├── GetBasket/
+│       │   └── GetBasketHandler.cs
+│       ├── AddItemIntoBasket/
+│       │   └── AddItemIntoBasketHandler.cs
+│       ├── RemoveItemFromBasket/
+│       │   └── RemoveItemFromBasketHandler.cs
+│       ├── UpdateItemPriceInBasket/
+│       └── CheckoutBasket/
+```
+
+## DTOs cho Basket Module
+
+```csharp
+// ShoppingCartDto.cs
+public record ShoppingCartDto(Guid Id, string UserName, List<ShoppingCartItemDto> Items);
+
+// ShoppingCartItemDto.cs
+public record ShoppingCartItemDto(Guid Id, Guid ShoppingCartId, Guid ProductId,
+    int Quantity, string Color, decimal Price, string ProductName);
+```
+
+DTOs phản ánh cấu trúc của các entities `ShoppingCart` và `ShoppingCartItem`.
+
+## CreateBasket — Command và Handler
+
+```csharp
+// Command và Result
+public record CreateBasketCommand(ShoppingCartDto ShoppingCart)
+    : ICommand<CreateBasketResult>;
+public record CreateBasketResult(Guid Id);
+
+// Validator
+public class CreateBasketCommandValidator : AbstractValidator<CreateBasketCommand>
+{
+    public CreateBasketCommandValidator()
+    {
+        RuleFor(x => x.ShoppingCart.UserName).NotEmpty().WithMessage("Username is required");
+    }
+}
+
+// Handler
+public class CreateBasketCommandHandler(BasketDbContext dbContext)
+    : ICommandHandler<CreateBasketCommand, CreateBasketResult>
+{
+    public async Task<CreateBasketResult> Handle(CreateBasketCommand command, CancellationToken cancellationToken)
+    {
+        var basket = CreateNewBasket(command.ShoppingCart);
+        dbContext.ShoppingCarts.Add(basket);
+        await dbContext.SaveChangesAsync(cancellationToken);
+        return new CreateBasketResult(basket.Id);
+    }
+
+    private ShoppingCart CreateNewBasket(ShoppingCartDto dto)
+    {
+        var basket = ShoppingCart.Create(Guid.NewGuid(), dto.UserName);
+        foreach (var item in dto.Items)
+        {
+            basket.AddItem(item.ProductId, item.Quantity, item.Color, item.Price, item.ProductName);
+        }
+        return basket;
+    }
+}
+```
+
+**Lưu ý:** `ShoppingCart.Create()` và `basket.AddItem()` là các rich domain model methods — chúng đóng gói validation và business logic bên trong entity.
+
+## DeleteBasket — Command và Handler
+
+```csharp
+public record DeleteBasketCommand(string UserName) : ICommand<DeleteBasketResult>;
+public record DeleteBasketResult(bool IsSuccess);
+
+public class DeleteBasketCommandHandler(BasketDbContext dbContext)
+    : ICommandHandler<DeleteBasketCommand, DeleteBasketResult>
+{
+    public async Task<DeleteBasketResult> Handle(DeleteBasketCommand command, CancellationToken cancellationToken)
+    {
+        var basket = await dbContext.ShoppingCarts
+            .SingleOrDefaultAsync(x => x.UserName == command.UserName, cancellationToken)
+            ?? throw new BasketNotFoundException(command.UserName);
+
+        dbContext.ShoppingCarts.Remove(basket);
+        await dbContext.SaveChangesAsync(cancellationToken);
+        return new DeleteBasketResult(IsSuccess: true);
+    }
+}
+```
+
+### Tại sao dùng `SingleOrDefaultAsync` thay vì `FirstOrDefaultAsync`?
+
+- **`SingleOrDefaultAsync`** — trả về 1 phần tử duy nhất khớp điều kiện, hoặc `null` nếu không tìm thấy. **Ném exception nếu có nhiều hơn 1 kết quả** → phù hợp khi username phải là unique.
+- **`FirstOrDefaultAsync`** — trả về phần tử đầu tiên khớp điều kiện → phù hợp khi có thể có nhiều kết quả và chỉ cần lấy một.
+
+Vì mỗi username chỉ có một basket duy nhất, `SingleOrDefaultAsync` cung cấp thêm một lớp validation.
+
+### Custom Exception — BasketNotFoundException
+
+```csharp
+public class BasketNotFoundException(string userName)
+    : NotFoundException("ShoppingCart", userName);
+```
+
+Class này kế thừa từ `NotFoundException` trong Shared library — specific cho trường hợp basket không tìm thấy theo username.
+
+## GetBasket — Query và Handler
+
+```csharp
+public record GetBasketQuery(string UserName) : IQuery<GetBasketResult>;
+public record GetBasketResult(ShoppingCartDto ShoppingCart);
+
+public class GetBasketQueryHandler(BasketDbContext dbContext)
+    : IQueryHandler<GetBasketQuery, GetBasketResult>
+{
+    public async Task<GetBasketResult> Handle(GetBasketQuery query, CancellationToken cancellationToken)
+    {
+        var basket = await dbContext.ShoppingCarts
+            .AsNoTracking()
+            .Include(x => x.Items)
+            .SingleOrDefaultAsync(x => x.UserName == query.UserName, cancellationToken)
+            ?? throw new BasketNotFoundException(query.UserName);
+
+        var basketDto = basket.Adapt<ShoppingCartDto>();
+        return new GetBasketResult(basketDto);
+    }
+}
+```
+
+**Lưu ý:** Dùng `AsNoTracking()` cho query operations vì chúng ta chỉ đọc dữ liệu, không cần EF Core tracking. `Include(x => x.Items)` load eager shopping cart items cùng với shopping cart.
+
+`basket.Adapt<ShoppingCartDto>()` là Mapster extension method — tự động map entity sang DTO.
+
+## AddItemIntoBasket — Command và Handler
+
+```csharp
+public record AddItemIntoBasketCommand(string UserName, ShoppingCartItemDto ShoppingCartItem)
+    : ICommand<AddItemIntoBasketResult>;
+public record AddItemIntoBasketResult(Guid Id);
+
+public class AddItemIntoBasketCommandValidator : AbstractValidator<AddItemIntoBasketCommand>
+{
+    public AddItemIntoBasketCommandValidator()
+    {
+        RuleFor(x => x.UserName).NotEmpty();
+        RuleFor(x => x.ShoppingCartItem.ProductId).NotEmpty();
+        RuleFor(x => x.ShoppingCartItem.Quantity).GreaterThan(0);
+    }
+}
+
+public class AddItemIntoBasketCommandHandler(BasketDbContext dbContext)
+    : ICommandHandler<AddItemIntoBasketCommand, AddItemIntoBasketResult>
+{
+    public async Task<AddItemIntoBasketResult> Handle(AddItemIntoBasketCommand command, CancellationToken cancellationToken)
+    {
+        var basket = await dbContext.ShoppingCarts
+            .Include(x => x.Items)
+            .SingleOrDefaultAsync(x => x.UserName == command.UserName, cancellationToken)
+            ?? throw new BasketNotFoundException(command.UserName);
+
+        var item = command.ShoppingCartItem;
+        basket.AddItem(item.ProductId, item.Quantity, item.Color, item.Price, item.ProductName);
+
+        await dbContext.SaveChangesAsync(cancellationToken);
+        return new AddItemIntoBasketResult(basket.Id);
+    }
+}
+```
+
+`basket.AddItem()` là rich domain model method trong `ShoppingCart` entity — kiểm tra nếu product đã có trong cart thì tăng quantity, nếu chưa có thì tạo item mới.
+
+## RemoveItemFromBasket — Command và Handler
+
+```csharp
+public record RemoveItemFromBasketCommand(string UserName, Guid ProductId)
+    : ICommand<RemoveItemFromBasketResult>;
+public record RemoveItemFromBasketResult(Guid Id);
+
+public class RemoveItemFromBasketCommandValidator : AbstractValidator<RemoveItemFromBasketCommand>
+{
+    public RemoveItemFromBasketCommandValidator()
+    {
+        RuleFor(x => x.UserName).NotEmpty();
+        RuleFor(x => x.ProductId).NotEmpty();
+    }
+}
+
+public class RemoveItemFromBasketCommandHandler(BasketDbContext dbContext)
+    : ICommandHandler<RemoveItemFromBasketCommand, RemoveItemFromBasketResult>
+{
+    public async Task<RemoveItemFromBasketResult> Handle(RemoveItemFromBasketCommand command, CancellationToken cancellationToken)
+    {
+        var basket = await dbContext.ShoppingCarts
+            .Include(x => x.Items)
+            .SingleOrDefaultAsync(x => x.UserName == command.UserName, cancellationToken)
+            ?? throw new BasketNotFoundException(command.UserName);
+
+        basket.RemoveItem(command.ProductId);
+
+        await dbContext.SaveChangesAsync(cancellationToken);
+        return new RemoveItemFromBasketResult(basket.Id);
+    }
+}
+```
+
+`basket.RemoveItem(productId)` là rich domain model method — tìm item theo productId trong collection và xóa khỏi giỏ hàng.
+
+## Tổng kết Use Cases Basket Module
+
+| Use Case | Loại | Handler |
+|----------|------|---------|
+| CreateBasket | Command | Tạo shopping cart mới + items |
+| DeleteBasket | Command | Xóa shopping cart theo username |
+| GetBasket | Query | Lấy shopping cart theo username (read-only) |
+| AddItemIntoBasket | Command | Thêm item vào shopping cart |
+| RemoveItemFromBasket | Command | Xóa item khỏi shopping cart |
+| UpdateItemPriceInBasket | Command | Cập nhật giá item (triggered bởi catalog event) |
+| CheckoutBasket | Command | Checkout basket, publish event |
+
+Tất cả operations đều sử dụng pattern: Command/Query record → Validator → Handler với DbContext inject qua primary constructor.

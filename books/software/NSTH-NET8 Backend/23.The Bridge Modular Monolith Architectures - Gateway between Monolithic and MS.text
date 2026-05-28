@@ -1,0 +1,108 @@
+## Modular Monolith Architecture – Cầu Nối Giữa Monolithic và Microservices
+
+Trong phần này, chúng ta sẽ tìm hiểu về **Modular Monolith Architecture** – kiến trúc được coi là cầu nối và cửa ngõ giữa kiến trúc monolithic truyền thống và microservices hiện đại.
+
+## Modular Monolith Architecture Là Gì?
+
+Modular Monolith Architecture là cách tiếp cận trong đó ứng dụng được phát triển như một đơn vị duy nhất, nhưng nội bộ được chia thành các **modules độc lập, loosely coupled và có ranh giới rõ ràng**.
+
+Cách tiếp cận này cho phép ứng dụng duy trì sự đơn giản của monolith trong khi vẫn hưởng được một số lợi ích của tính modularity – thứ thường được liên kết với microservices.
+
+Trong kiến trúc này, chúng ta vẫn build và deploy một ứng dụng duy nhất (giống monolithic truyền thống), nhưng tổ chức code thành các independent modules cho mỗi domain. Mỗi module đại diện cho một **bounded context** trong domain ứng dụng, và chỉ kết nối với những module khác khi thực sự cần thiết.
+
+### Đặc điểm chính
+
+**Modularity và Bounded Context:** Ứng dụng được chia thành các modules, mỗi module đóng gói một business domain cụ thể. Các modules giao tiếp qua well-defined interfaces, giảm dependencies và tăng maintainability.
+
+**Triển khai đơn giản:** Không giống microservices với nhiều deployment pipeline riêng, modular monolith deploy như một đơn vị duy nhất. Điều này giảm operational complexity và loại bỏ vấn đề service interdependencies.
+
+**Inter-module communication hiệu quả:** Các modules giao tiếp qua direct method calls hoặc event mechanisms trong cùng một application process. Không có network latency như microservices, dẫn đến hiệu năng tốt hơn và transaction management đơn giản hơn.
+
+**Unified data management:** Các modules thường dùng chung database, được phân tách bởi schemas hoặc tables riêng cho từng module. Trong cấu hình nâng cao hơn, có thể dùng database riêng cho từng module.
+
+### EShop Modular Monolith – Tổng quan
+
+Trong ứng dụng EShop của chúng ta, kiến trúc modular monolith bao gồm bốn modules chính:
+
+- **Catalog Module:** Quản lý thông tin sản phẩm, danh mục, giá cả
+- **Basket Module:** Xử lý shopping cart, thêm/cập nhật/xóa items
+- **Ordering Module:** Quản lý quy trình đặt hàng và xử lý đơn hàng
+- **Identity Module:** Cung cấp dịch vụ authentication và authorization qua Keycloak
+
+Mỗi module được phát triển như một class library project riêng với data access, business logic và API layer của riêng nó. API project đóng vai trò entry point, expose endpoints và điều hướng đến các modules bên trong.
+
+## Ưu Điểm Của Modular Monolith So Với Microservices
+
+**Giao tiếp đơn giản, không network overhead:** Tất cả components chạy trong cùng một process – không có độ trễ mạng, không cần service discovery.
+
+**Quản lý dữ liệu thống nhất và transaction integrity:** Database thống nhất hoặc phối hợp schema đảm bảo data consistency mà không cần distributed transaction management.
+
+**Scalability hiệu quả:** Có thể scale thông qua load balancer và tối ưu từng module. Cho phép targeted scaling cho các module cần nhiều tài nguyên hơn.
+
+**Đơn giản trong phát triển:** Tránh được những phức tạp của distributed system như service discovery, network latency và inter-service communication. Deployment đơn giản, ít nguy cơ failure hơn.
+
+## Monolith First – Quan Điểm Của Martin Fowler và Sam Newman
+
+### Martin Fowler (2015)
+
+Martin Fowler trong bài viết "Monolith First" đã chia sẻ quan điểm quan trọng:
+
+*"Hầu hết các câu chuyện thành công về microservices đều bắt đầu từ một monolithic application quá lớn rồi mới được tách ra. Và hầu hết các trường hợp xây dựng microservices từ đầu đều gặp rắc rối nghiêm trọng."*
+
+Ông khuyến nghị không nên bắt đầu dự án bằng microservices, ngay cả khi bạn chắc chắn ứng dụng sẽ phát triển lớn. Lý do:
+
+- **Không chắc chắn về giá trị:** Khi bắt đầu ứng dụng mới, rất khó biết liệu nó có thực sự hữu ích với người dùng không.
+- **Cần boundaries ổn định:** Microservices chỉ hiệu quả khi có service boundaries tốt và ổn định – điều này đòi hỏi hiểu biết sâu về domain mà thường phải có thời gian phát triển mới đạt được.
+
+Cách tiếp cận đúng: Thiết kế monolithic với sự chú ý cẩn thận đến modularity, cả ở API boundaries lẫn cách lưu trữ dữ liệu.
+
+### Sam Newman (Building Microservices)
+
+Sam Newman đồng ý với quan điểm của Fowler và khuyến nghị:
+
+- Bắt đầu với monolithic architecture như một single deployable unit
+- Chỉ chuyển sang microservices khi bạn đã thấy rõ lợi ích thực sự
+- Monolithic architecture là **một lựa chọn hợp lệ** cho hầu hết các dự án
+- Nên **tìm lý do thuyết phục** để dùng microservices, thay vì mặc định dùng microservices cho mọi dự án
+
+## Monolith First – Con Đường Chuyển Đổi Dần Dần
+
+### Tiếp cận tăng dần (Incremental Refactoring)
+
+Thay vì cố gắng chuyển đổi toàn bộ monolith sang microservices một lúc (Big Bang approach – rủi ro cao), hãy áp dụng incremental refactoring:
+
+1. **Bắt đầu với Modular Monolith:** Phát triển EShop với modules Catalog, Basket, Ordering, Identity trong một application
+2. **Xác định ứng viên:** Tìm modules có ranh giới rõ ràng và ít dependencies
+3. **Định nghĩa ranh giới:** Xác định rõ domain responsibilities và interfaces cho service sẽ được tách
+4. **Tách dần từng module:** Bắt đầu với Identity module (ít phức tạp, ranh giới rõ)
+5. **Test và xác nhận:** Kiểm thử kỹ lưỡng microservice mới trước khi tiếp tục
+6. **Lặp lại:** Áp dụng cho từng module tiếp theo
+
+Lợi ích của cách tiếp cận này: giảm rủi ro, cho phép cải tiến liên tục, hệ thống luôn ổn định trong suốt quá trình chuyển đổi.
+
+## Case Study: Shopify
+
+Shopify là ví dụ điển hình về thành công với Modular Monolith Architecture.
+
+Ứng dụng core của Shopify được xây dựng trên Ruby on Rails, có hơn **2.8 triệu dòng code** và **500.000 commits**. Thay vì chuyển sang microservices, Shopify chọn cách làm monolith trở nên modular bằng cách chia thành các components độc lập tập trung vào các business domain khác nhau.
+
+Shopify không bao giờ có kế hoạch chuyển sang microservices vì họ đã hoàn toàn tin tưởng vào ý tưởng "majestic monolith" – một monolith được thiết kế tốt với modularity cao.
+
+### Kết quả ấn tượng
+
+Trong Black Friday và Cyber Monday, Shopify xử lý lưu lượng truy cập cực cao với **near-perfect uptime**, trung bình **30 terabytes per minute** của requests. Điều này chứng minh modular monolith hoàn toàn có khả năng xử lý traffic quy mô lớn khi được thiết kế đúng cách.
+
+## Phân Rã EShop Thành Các Modules
+
+Dựa trên **Bounded Context Pattern** từ Domain Driven Design, chúng ta phân rã EShop thành bốn modules:
+
+| Module | Bounded Context | Trách nhiệm chính |
+|--------|-----------------|-------------------|
+| **Catalog** | Product Information Management | Quản lý sản phẩm, danh mục, giá cả; domain events ProductCreated và ProductPriceChanged |
+| **Basket** | Shopping Cart Management | Thêm/cập nhật/xóa items; tích hợp Redis; synchronous call đến Catalog |
+| **Identity** | Authentication & Authorization | User registration/login, OpenID Connect, Keycloak integration |
+| **Ordering** | Order Management | Tạo và xử lý đơn hàng; Outbox Pattern cho reliable messaging |
+
+Mỗi module được phát triển với **Vertical Slice Architecture** kết hợp **Domain Driven Design** và **CQRS pattern**, sử dụng Entity Framework Core để tương tác với PostgreSQL.
+
+Đây là nền tảng vững chắc để chúng ta bắt đầu xây dựng từng module một trong các phần tiếp theo.

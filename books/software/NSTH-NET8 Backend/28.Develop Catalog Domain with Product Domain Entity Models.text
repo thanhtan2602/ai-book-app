@@ -1,0 +1,322 @@
+Trong phần này, chúng ta sẽ phát triển Catalog Domain với Product domain entity models. Đây là bước tiếp theo sau khi đã xây dựng Shared DDD abstractions — giờ chúng ta áp dụng chúng vào Catalog Module.
+
+Nội dung bao gồm:
+- Phát triển Product entity với Anemic vs Rich Domain Model
+- Implement rich domain model cho Product aggregate
+- Phát triển domain events: ProductCreatedEvent và ProductPriceChangedEvent
+- Raise domain events từ Product aggregate
+
+## Cấu Trúc Folder
+
+```
+Catalog/
+└── Products/                    # Feature folder
+    ├── Models/
+    │   └── Product.cs           # Domain entity (Aggregate Root)
+    ├── Events/
+    │   ├── ProductCreatedEvent.cs
+    │   └── ProductPriceChangedEvent.cs
+    └── GlobalUsings.cs
+```
+
+## Product Domain Entity
+
+### Bước 1: Tạo Product Entity (Anemic version)
+
+```csharp
+// Catalog/Products/Models/Product.cs
+public class Product : Entity<Guid>
+{
+    public string Name { get; set; } = default!;
+    public List<string> Category { get; set; } = new();
+    public string Description { get; set; } = default!;
+    public string ImageFile { get; set; } = default!;
+    public decimal Price { get; set; }
+}
+```
+
+Đây là **Anemic Domain Model** — chỉ chứa data properties, không có business logic. Đơn giản ban đầu, nhưng business logic sẽ bị phân tán ra khắp application khi dự án lớn lên.
+
+## Anemic vs Rich Domain Model
+
+### Anemic Domain Model
+
+Entities chỉ là data containers với getters và setters. Business logic nằm ở service layer bên ngoài entity.
+
+```csharp
+// Anemic — Order chỉ chứa data
+public class Order
+{
+    public Guid Id { get; set; }
+    public List<OrderItem> Items { get; set; } = new();
+    public decimal Total { get; set; }
+    // Không có business logic
+}
+
+// Business logic ở service layer — KHÔNG tốt
+public class OrderService
+{
+    public void AddItem(Order order, OrderItem item) { ... }
+    public void RemoveItem(Order order, Guid itemId) { ... }
+    public decimal CalculateTotal(Order order) { ... }
+}
+```
+
+**Vấn đề:** Business rules bị duplicate, khó kiểm soát invariants, và code khó maintain theo thời gian.
+
+### Rich Domain Model
+
+Entities encapsulate cả data lẫn behavior — business rules nằm trong entity, không phải service layer.
+
+```csharp
+// Rich — Order chứa cả data và business logic
+public class Order : Aggregate<Guid>
+{
+    private readonly List<OrderItem> _items = new();
+    public IReadOnlyList<OrderItem> Items => _items.AsReadOnly();
+    public decimal Total { get; private set; }
+
+    // Business logic bên trong entity
+    public void AddItem(Guid productId, int quantity, decimal price)
+    {
+        ArgumentOutOfRangeException.ThrowIfNegativeOrZero(quantity);
+        var existing = _items.FirstOrDefault(x => x.ProductId == productId);
+        if (existing != null) existing.Increase(quantity);
+        else _items.Add(new OrderItem(Id, productId, quantity, price));
+        RecalculateTotal();
+    }
+
+    public void RemoveItem(Guid productId)
+    {
+        var item = _items.FirstOrDefault(x => x.ProductId == productId)
+            ?? throw new DomainException("Item not found");
+        _items.Remove(item);
+        RecalculateTotal();
+    }
+
+    private void RecalculateTotal()
+        => Total = _items.Sum(i => i.Price * i.Quantity);
+}
+```
+
+**Lợi ích:** Business rules tập trung trong entity, invariants luôn được enforce, dễ test.
+
+## Implement Rich Domain Model cho Product
+
+### Bước 1: Chuyển từ Entity sang Aggregate
+
+```csharp
+// Thay đổi: Entity<Guid> → Aggregate<Guid>
+public class Product : Aggregate<Guid>  // ← Kế thừa từ Aggregate để raise events
+{
+    public string Name { get; private set; } = default!;      // ← private setter
+    public List<string> Category { get; private set; } = new();
+    public string Description { get; private set; } = default!;
+    public string ImageFile { get; private set; } = default!;
+    public decimal Price { get; private set; }
+```
+
+**Tại sao chuyển sang `Aggregate<Guid>`?**
+
+Aggregate base class cung cấp `AddDomainEvent()` và `ClearDomainEvents()` — cần thiết để raise domain events.
+
+**Tại sao đổi setters thành `private`?**
+
+Đảm bảo properties chỉ được modified qua các controlled methods trong entity, không thể set trực tiếp từ bên ngoài:
+
+```csharp
+// KHÔNG được phép từ bên ngoài:
+product.Price = 999;  // Compile error!
+
+// CHỈ được phép qua method:
+product.Update(..., price: 999);  // OK
+```
+
+### Bước 2: Thêm Create Factory Method
+
+```csharp
+public static Product Create(
+    Guid id,
+    string name,
+    List<string> category,
+    string description,
+    string imageFile,
+    decimal price)
+{
+    ArgumentException.ThrowIfNullOrWhiteSpace(name);
+    ArgumentOutOfRangeException.ThrowIfNegativeOrZero(price);
+
+    var product = new Product
+    {
+        Id = id,
+        Name = name,
+        Category = category,
+        Description = description,
+        ImageFile = imageFile,
+        Price = price
+    };
+
+    product.AddDomainEvent(new ProductCreatedEvent(product));
+
+    return product;
+}
+```
+
+`Create` là **factory method** — dùng thay cho constructor public:
+- Validate inputs trước khi tạo entity
+- Raise domain event `ProductCreatedEvent`
+- Đảm bảo entity luôn ở trạng thái hợp lệ khi được tạo
+
+### Bước 3: Thêm Update Method
+
+```csharp
+public void Update(
+    string name,
+    List<string> category,
+    string description,
+    string imageFile,
+    decimal price)
+{
+    ArgumentException.ThrowIfNullOrWhiteSpace(name);
+    ArgumentOutOfRangeException.ThrowIfNegativeOrZero(price);
+
+    Name = name;
+    Category = category;
+    Description = description;
+    ImageFile = imageFile;
+
+    if (Price != price)
+    {
+        Price = price;
+        AddDomainEvent(new ProductPriceChangedEvent(this));
+    }
+}
+```
+
+`Update` method:
+- Validate tất cả inputs
+- Cập nhật properties qua private setters
+- **Chỉ raise `ProductPriceChangedEvent` khi giá thực sự thay đổi** — không raise nếu giá giống cũ
+
+## Domain Events
+
+### ProductCreatedEvent
+
+```csharp
+// Catalog/Products/Events/ProductCreatedEvent.cs
+public record ProductCreatedEvent(Product Product) : IDomainEvent;
+```
+
+Event được raise khi tạo sản phẩm mới. Sẽ được xử lý bởi `ProductCreatedEventHandler` (ví dụ: log, gửi notification).
+
+### ProductPriceChangedEvent
+
+```csharp
+// Catalog/Products/Events/ProductPriceChangedEvent.cs
+public record ProductPriceChangedEvent(Product Product) : IDomainEvent;
+```
+
+Event được raise khi giá sản phẩm thay đổi. Quan trọng hơn — sẽ lead đến integration event `ProductPriceChangedIntegrationEvent` được publish lên RabbitMQ để Basket Module cập nhật giá trong shopping carts.
+
+**Cả hai events đều là `record` types:**
+- Immutable — không thể thay đổi sau khi tạo
+- So sánh theo giá trị (value equality)
+- Implement `IDomainEvent` interface
+
+## Global Using File
+
+Để tránh lặp lại using statements trong nhiều files của Catalog module:
+
+```csharp
+// Catalog/GlobalUsings.cs
+global using Shared.DDD;
+```
+
+Sau đó trong `Product.cs` và các event files, không cần thêm `using Shared.DDD;` nữa.
+
+## Product Entity Hoàn Chỉnh
+
+```csharp
+// Catalog/Products/Models/Product.cs
+public class Product : Aggregate<Guid>
+{
+    public string Name { get; private set; } = default!;
+    public List<string> Category { get; private set; } = new();
+    public string Description { get; private set; } = default!;
+    public string ImageFile { get; private set; } = default!;
+    public decimal Price { get; private set; }
+
+    public static Product Create(
+        Guid id, string name, List<string> category,
+        string description, string imageFile, decimal price)
+    {
+        ArgumentException.ThrowIfNullOrWhiteSpace(name);
+        ArgumentOutOfRangeException.ThrowIfNegativeOrZero(price);
+
+        var product = new Product
+        {
+            Id = id, Name = name, Category = category,
+            Description = description, ImageFile = imageFile, Price = price
+        };
+
+        product.AddDomainEvent(new ProductCreatedEvent(product));
+        return product;
+    }
+
+    public void Update(
+        string name, List<string> category,
+        string description, string imageFile, decimal price)
+    {
+        ArgumentException.ThrowIfNullOrWhiteSpace(name);
+        ArgumentOutOfRangeException.ThrowIfNegativeOrZero(price);
+
+        Name = name;
+        Category = category;
+        Description = description;
+        ImageFile = imageFile;
+
+        if (Price != price)
+        {
+            Price = price;
+            AddDomainEvent(new ProductPriceChangedEvent(this));
+        }
+    }
+}
+```
+
+## Luồng Domain Events trong Catalog Module
+
+```
+CreateProductHandler.Handle()
+    → Product.Create(id, name, ...) [Factory Method]
+        → AddDomainEvent(new ProductCreatedEvent(product))
+    → dbContext.Products.Add(product)
+    → dbContext.SaveChangesAsync()
+        → DispatchDomainEventsInterceptor.SavedChangesAsync()
+            → mediator.Publish(ProductCreatedEvent)
+                → ProductCreatedEventHandler.Handle()
+                    → Log "Product created: {Name}"
+
+UpdateProductHandler.Handle()
+    → product.Update(name, price, ...)  [nếu giá thay đổi]
+        → AddDomainEvent(new ProductPriceChangedEvent(product))
+    → dbContext.SaveChangesAsync()
+        → DispatchDomainEventsInterceptor.SavedChangesAsync()
+            → mediator.Publish(ProductPriceChangedEvent)
+                → ProductPriceChangedEventHandler.Handle()
+                    → Publish ProductPriceChangedIntegrationEvent → RabbitMQ
+                        → Basket Module consumes → Update shopping cart prices
+```
+
+## Tóm Tắt
+
+Catalog Domain được xây dựng theo **Rich Domain Model**:
+
+1. **Product** kế thừa từ `Aggregate<Guid>` — có thể raise domain events
+2. **Private setters** — properties chỉ được sửa qua controlled methods
+3. **Create factory method** — validate inputs + raise `ProductCreatedEvent`
+4. **Update method** — validate inputs + raise `ProductPriceChangedEvent` khi giá thay đổi
+5. **Domain Events** là `record` types implement `IDomainEvent`
+6. **EF Core Interceptor** dispatch domain events sau `SaveChangesAsync()`
+
+Kiến trúc này đảm bảo business rules luôn được enforce tại domain layer, không bị phân tán ra service layer — code dễ maintain, dễ test và phù hợp với DDD principles.

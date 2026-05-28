@@ -1,0 +1,182 @@
+## Làm việc với Metadata
+
+### Thêm Metadata qua Azure Portal
+
+Khi xem thông tin của một blob trong Azure Portal, bạn có thể cuộn xuống để thấy phần **Metadata**. Tại đây bạn có thể thêm metadata theo dạng key-value:
+
+- Key phải là duy nhất
+- Không được để trống key hoặc value
+- Tổng kích thước metadata tối đa là 8 kilobytes
+
+Ví dụ, bạn có thể thêm metadata `title: My Book` và `comment: This is a special diary`.
+
+### Đọc Metadata trong ứng dụng .NET
+
+Để trích xuất metadata và hiển thị trong ứng dụng, bạn cần dùng `GetPropertiesAsync()` trên `BlobClient`:
+
+```csharp
+var blobClient = containerClient.GetBlobClient(blobItem.Name);
+var properties = await blobClient.GetPropertiesAsync();
+
+if (properties.Value.Metadata.ContainsKey("title"))
+{
+    var title = properties.Value.Metadata["title"];
+    // Hiển thị title
+}
+```
+
+### Thêm Metadata khi Upload Blob
+
+Khi upload blob, bạn có thể đính kèm metadata bằng cách tạo một dictionary:
+
+```csharp
+var metadata = new Dictionary<string, string>();
+
+if (!string.IsNullOrEmpty(blobModel.Title))
+    metadata.Add("title", blobModel.Title);
+    
+if (!string.IsNullOrEmpty(blobModel.Comment))
+    metadata.Add("comment", blobModel.Comment);
+
+await blobClient.UploadAsync(file.OpenReadStream(), new BlobUploadOptions
+{
+    HttpHeaders = new BlobHttpHeaders { ContentType = file.ContentType },
+    Metadata = metadata
+});
+```
+
+### Xóa hoặc Cập nhật Metadata
+
+Để xóa metadata, gọi `SetMetadataAsync()` với một dictionary rỗng:
+
+```csharp
+var emptyMetadata = new Dictionary<string, string>();
+await blobClient.SetMetadataAsync(emptyMetadata);
+```
+
+Để xóa một key cụ thể (ví dụ xóa `title`), chỉ giữ lại những key bạn muốn:
+
+```csharp
+var newMetadata = new Dictionary<string, string>();
+newMetadata.Add("comment", existingComment); // giữ comment, xóa title
+await blobClient.SetMetadataAsync(newMetadata);
+```
+
+### Hiển thị Hình ảnh với Metadata từ Container Riêng tư
+
+Để hiển thị hình ảnh kèm metadata từ một container riêng tư, bạn cần dùng phương thức `GetAllBlobsWithUri` trả về `List<BlobModel>` với các thuộc tính `URI`, `Title` và `Comment`:
+
+```csharp
+public async Task<List<BlobModel>> GetAllBlobsWithUri(string containerName)
+{
+    var containerClient = _blobClient.GetBlobContainerClient(containerName);
+    var blobList = new List<BlobModel>();
+    
+    await foreach (var blob in containerClient.GetBlobsAsync())
+    {
+        var blobClient = containerClient.GetBlobClient(blob.Name);
+        var blobModel = new BlobModel
+        {
+            URI = blobClient.Uri.AbsoluteUri
+        };
+        
+        var properties = await blobClient.GetPropertiesAsync();
+        if (properties.Value.Metadata.ContainsKey("title"))
+            blobModel.Title = properties.Value.Metadata["title"];
+        if (properties.Value.Metadata.ContainsKey("comment"))
+            blobModel.Comment = properties.Value.Metadata["comment"];
+            
+        blobList.Add(blobModel);
+    }
+    return blobList;
+}
+```
+
+## SAS Token (Shared Access Signature)
+
+### SAS là gì?
+
+SAS (Shared Access Signature) là một chuỗi URI đặc biệt chứa thông tin xác thực bảo mật, cho phép bạn cấp quyền truy cập có giới hạn đến các tài nguyên trong Azure Storage mà không cần chia sẻ khóa tài khoản của bạn.
+
+### Tạo SAS từ Azure Portal
+
+Trong Azure Portal, chọn một blob và nhấp **Generate SAS**. Bạn có thể cấu hình:
+
+- **Phương thức ký (Signing method):** Dùng Account Key
+- **Quyền (Permissions):** Read, Write, Delete, v.v.
+- **Thời gian bắt đầu và kết thúc:** Xác định thời hạn hiệu lực
+- **Giao thức được phép:** HTTPS only
+
+Sau khi tạo, URL có dạng:
+```
+https://account.blob.core.windows.net/container/blob?sp=r&st=2024-01-01T00:00:00Z&se=2024-01-01T05:00:00Z&spr=https&sv=2023-01-03&sr=b&sig=...
+```
+
+Các tham số trong URL:
+- `sp` (Permission): `r` = read
+- `st` (Start time): Thời gian bắt đầu
+- `se` (End time): Thời gian kết thúc
+- `spr` (Protocol): `https`
+- `sv` (Storage version): Phiên bản API
+- `sr` (Signed resource): `b` = blob
+- `sig` (Signature): Chữ ký Sha256
+
+### SAS Token ở cấp Blob trong ứng dụng .NET
+
+Để tự động tạo SAS URI cho từng blob:
+
+```csharp
+if (blobClient.CanGenerateSasUri)
+{
+    var sasBuilder = new BlobSasBuilder
+    {
+        BlobContainerName = blobClient.GetParentBlobContainerClient().Name,
+        BlobName = blobClient.Name,
+        Resource = "b",
+        ExpiresOn = DateTimeOffset.UtcNow.AddHours(1)
+    };
+    sasBuilder.SetPermissions(BlobSasPermissions.Read);
+    
+    blobModel.URI = blobClient.GenerateSasUri(sasBuilder).AbsoluteUri;
+}
+```
+
+### SAS Token ở cấp Container
+
+Thay vì tạo SAS cho từng blob riêng lẻ, bạn có thể tạo ở cấp container:
+
+```csharp
+if (containerClient.CanGenerateSasUri)
+{
+    var builder = new BlobSasBuilder
+    {
+        BlobContainerName = containerClient.Name,
+        Resource = "c",
+        ExpiresOn = DateTimeOffset.UtcNow.AddHours(1)
+    };
+    builder.SetPermissions(BlobContainerSasPermissions.Read);
+    
+    var sasContainerSignature = containerClient
+        .GenerateSasUri(builder)
+        .AbsoluteUri
+        .Split('?')[1];
+    
+    // Nối SAS signature vào mỗi blob URI
+    blobModel.URI = blobClient.Uri.AbsoluteUri + "?" + sasContainerSignature;
+}
+```
+
+### SAS Token ở cấp Storage Account
+
+Để áp dụng SAS ở mức cao nhất (storage account level), bạn vào Azure Portal, vào storage account, chọn **Shared Access Signature** trong Settings. Tại đây bạn có thể:
+
+- Chọn các dịch vụ được phép (Blob, Queue, Table, File)
+- Chọn loại tài nguyên được phép (Service, Container, Object)
+- Thiết lập quyền
+- Đặt thời gian hết hạn (có thể đặt nhiều năm)
+
+Sau khi tạo, bạn nhận được một connection string hoàn chỉnh có thể thay thế connection string mặc định trong `appsettings.json`. Điều này cho phép tất cả các thao tác trong ứng dụng đều sử dụng SAS đã được cấu hình sẵn thay vì Account Key.
+
+## Tổ chức lại Project
+
+Sau khi hoàn thành phần Blob Storage, bạn nên tổ chức lại solution bằng cách tạo thư mục `Azure Blob Example` và di chuyển dự án vào đó. Điều này giúp giữ solution gọn gàng khi chúng ta bắt đầu thêm các dự án cho Azure Function và Logic Apps.

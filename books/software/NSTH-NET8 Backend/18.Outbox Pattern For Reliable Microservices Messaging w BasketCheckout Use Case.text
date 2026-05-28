@@ -1,0 +1,583 @@
+Trong phần này, chúng ta sẽ phát triển Outbox Pattern cho reliable messaging (nhắn tin đáng tin cậy) với use case Basket Checkout. Chúng ta sẽ tìm hiểu cách implement Outbox Pattern để đảm bảo giao tiếp đáng tin cậy giữa các modules trong kiến trúc Modular Monolith.
+
+## Vấn Đề: Dual Write Problem
+
+Trong hệ thống phân tán, khi một service cần cập nhật database **và** gửi message/event trong cùng một business transaction, sẽ xuất hiện **Dual Write Problem** (vấn đề ghi kép):
+
+- Nếu publish event thành công nhưng delete basket thất bại → basket không bị xóa dù order đã được tạo
+- Nếu delete basket thành công nhưng publish event thất bại → order không bao giờ được tạo
+
+Hai hệ thống (PostgreSQL và RabbitMQ) rơi vào trạng thái không nhất quán (inconsistent state). Đây là vấn đề khó phát hiện và khó sửa nếu không có cơ chế phục hồi phù hợp.
+
+## Giải Pháp: Transactional Outbox Pattern
+
+**Outbox Pattern** giải quyết Dual Write Problem bằng cách lưu message vào một bảng đặc biệt (`outbox`) trong cùng database transaction với business data:
+
+1. **Cùng transaction:** Cập nhật business data + lưu event vào outbox table được thực hiện trong một transaction duy nhất — nếu một phần thất bại, toàn bộ rollback theo nguyên tắc ACID.
+
+2. **Background publisher:** Một background service độc lập đọc outbox table và publish message lên message broker (RabbitMQ).
+
+3. **At-least-once delivery:** Ngay cả khi hệ thống crash, message đã được lưu trong database và sẽ được publish khi hệ thống phục hồi.
+
+## Luồng Basket Checkout End-to-End
+
+```
+Client → POST /basket/checkout
+    → CheckoutBasketEndpoint (Carter)
+    → CheckoutBasketCommand (MediatR)
+    → CheckoutBasketHandler
+        → Lấy basket từ database (tổng tiền)
+        → Tạo BasketCheckoutIntegrationEvent
+        → [TRANSACTION BEGIN]
+            → Xóa basket khỏi database
+            → Lưu event vào OutboxMessages table
+        → [TRANSACTION COMMIT]
+    → Background Service đọc OutboxMessages
+    → Publish BasketCheckoutIntegrationEvent → RabbitMQ
+    → OrderingModule consume event → Tạo Order mới
+```
+
+## Phân Tích Domain và Use Cases
+
+### Integration Event: BasketCheckoutIntegrationEvent
+
+Event được định nghĩa trong **Shared Messaging** class library (dùng chung giữa Basket và Ordering module):
+
+```csharp
+// SharedMessaging/Events/BasketCheckoutIntegrationEvent.cs
+public record BasketCheckoutIntegrationEvent : IntegrationEvent
+{
+    public string UserName { get; init; } = default!;
+    public Guid CustomerId { get; init; }
+    public decimal TotalPrice { get; init; }
+
+    // Shipping Address
+    public string FirstName { get; init; } = default!;
+    public string LastName { get; init; } = default!;
+    public string EmailAddress { get; init; } = default!;
+    public string AddressLine { get; init; } = default!;
+    public string Country { get; init; } = default!;
+    public string State { get; init; } = default!;
+    public string ZipCode { get; init; } = default!;
+
+    // Payment
+    public string CardName { get; init; } = default!;
+    public string CardNumber { get; init; } = default!;
+    public string Expiration { get; init; } = default!;
+    public string CVV { get; init; } = default!;  // C phải uppercase!
+    public int PaymentMethod { get; init; }
+}
+```
+
+**Lưu ý quan trọng:** Tên property `CVV` phải viết đúng format (C uppercase, VV lowercase) để Mapster mapping hoạt động chính xác. Nếu viết sai, Mapster sẽ không map được field này.
+
+Sử dụng primitive types (string, decimal, int) thay vì value objects để đảm bảo dễ serialize/deserialize qua JSON khi truyền qua RabbitMQ.
+
+### REST API Endpoints
+
+| Method | URL | Mô tả |
+|--------|-----|--------|
+| POST | /basket/checkout | Checkout giỏ hàng (basket module) |
+| AMQP | RabbitMQ queue | Consume event (ordering module) |
+
+## MassTransit và RabbitMQ Setup
+
+### Shared Messaging Extension
+
+```csharp
+// SharedMessaging/Extensions/MassTransitExtensions.cs
+public static IServiceCollection AddMassTransitWithAssemblies(
+    this IServiceCollection services,
+    IConfiguration configuration,
+    params Assembly[] assemblies)
+{
+    services.AddMassTransit(config =>
+    {
+        config.SetKebabCaseEndpointNameFormatter();
+
+        foreach (var assembly in assemblies)
+        {
+            config.AddConsumers(assembly);
+            config.AddSagaStateMachines(assembly);
+            config.AddActivities(assembly);
+        }
+
+        config.UsingRabbitMq((context, cfg) =>
+        {
+            cfg.Host(new Uri(configuration["MessageBroker:Host"]!), host =>
+            {
+                host.Username(configuration["MessageBroker:UserName"]!);
+                host.Password(configuration["MessageBroker:Password"]!);
+            });
+            cfg.ConfigureEndpoints(context);
+        });
+    });
+
+    return services;
+}
+```
+
+### Cấu hình appsettings.json
+
+```json
+{
+  "MessageBroker": {
+    "Host": "amqp://localhost:5672",
+    "UserName": "guest",
+    "Password": "guest"
+  }
+}
+```
+
+### Docker Compose — RabbitMQ Service
+
+```yaml
+messagebus:
+  image: rabbitmq:management
+  container_name: message-bus
+  environment:
+    RABBITMQ_DEFAULT_USER: guest
+    RABBITMQ_DEFAULT_PASS: guest
+  ports:
+    - "5672:5672"   # AMQP protocol
+    - "15672:15672" # Management dashboard
+```
+
+### Đăng Ký trong Program.cs
+
+```csharp
+// Thêm ordering assembly khi có async communication
+var orderingAssembly = typeof(OrderingModule).Assembly;
+var basketAssembly = typeof(BasketModule).Assembly;
+
+builder.Services.AddMassTransitWithAssemblies(
+    builder.Configuration,
+    basketAssembly, orderingAssembly);
+```
+
+## Basket Module — CheckoutBasket Feature
+
+### DTO
+
+```csharp
+// Basket/Dtos/BasketCheckoutDto.cs
+public record BasketCheckoutDto(
+    string UserName,
+    Guid CustomerId,
+    decimal TotalPrice,
+    string FirstName, string LastName, string EmailAddress,
+    string AddressLine, string Country, string State, string ZipCode,
+    string CardName, string CardNumber, string Expiration,
+    string CVV, int PaymentMethod);
+```
+
+### Endpoint
+
+```csharp
+public record CheckoutBasketRequest(BasketCheckoutDto BasketCheckout);
+public record CheckoutBasketResponse(bool IsSuccess);
+
+public class CheckoutBasketEndpoint : ICarterModule
+{
+    public void AddRoutes(IEndpointRouteBuilder app)
+    {
+        app.MapPost("/basket/checkout",
+            async (CheckoutBasketRequest request, ISender sender) =>
+        {
+            var command = request.Adapt<CheckoutBasketCommand>();
+            var result = await sender.Send(command);
+            var response = result.Adapt<CheckoutBasketResponse>();
+            return Results.Ok(response);
+        })
+        .WithName("CheckoutBasket")
+        .WithSummary("Checkout Basket")
+        .Produces<CheckoutBasketResponse>(StatusCodes.Status200OK)
+        .ProducesProblem(StatusCodes.Status400BadRequest)
+        .RequireAuthorization();
+    }
+}
+```
+
+### Command và Handler (Không dùng Outbox — Phiên bản có vấn đề)
+
+Trước khi implement Outbox Pattern, handler trông như sau và có vấn đề:
+
+```csharp
+// Phiên bản CÓ VẤN ĐỀ — dual write problem
+public class CheckoutBasketHandler(IBasketRepository repository, IBus bus)
+    : ICommandHandler<CheckoutBasketCommand, CheckoutBasketResult>
+{
+    public async Task<CheckoutBasketResult> Handle(
+        CheckoutBasketCommand command, CancellationToken cancellationToken)
+    {
+        // Bước 1: Lấy basket
+        var basket = await repository.GetBasket(
+            command.BasketCheckout.UserName, true, cancellationToken);
+
+        // Bước 2: Tạo integration event
+        var eventMessage = command.BasketCheckout.Adapt<BasketCheckoutIntegrationEvent>();
+        eventMessage = eventMessage with { TotalPrice = basket.TotalPrice };
+
+        // KHÔNG AN TOÀN: Hai operation dưới đây không atomic
+        await bus.Publish(eventMessage, cancellationToken);  // Bước 3
+        await repository.DeleteBasket(command.BasketCheckout.UserName, cancellationToken);  // Bước 4
+
+        return new CheckoutBasketResult(IsSuccess: true);
+    }
+}
+```
+
+**Vấn đề:** Nếu `bus.Publish` thành công nhưng `DeleteBasket` thất bại → basket tồn tại mãi mãi và event đã gửi. Hoặc ngược lại.
+
+## Implement Outbox Pattern
+
+### Bước 1: Tạo OutboxMessage Entity
+
+```csharp
+// Basket/Models/OutboxMessage.cs
+public class OutboxMessage : Entity<Guid>
+{
+    public string Type { get; set; } = default!;
+    public string Content { get; set; } = default!;  // JSON payload
+    public DateTime OccurredOn { get; set; }
+    public DateTime? ProcessedOn { get; set; }
+}
+```
+
+### Bước 2: Thêm OutboxMessages vào BasketDbContext
+
+```csharp
+public class BasketDbContext : DbContext
+{
+    public DbSet<ShoppingCart> ShoppingCarts => Set<ShoppingCart>();
+    public DbSet<OutboxMessage> OutboxMessages => Set<OutboxMessage>();  // Thêm mới
+
+    // ...
+}
+```
+
+### Bước 3: Tạo Migration Mới
+
+Sau khi thêm entity, cần tạo lại migration:
+
+```
+# Xóa migration cũ trước để tránh conflict
+# Sau đó tạo migration mới:
+Add-Migration InitialCreate `
+  -OutputDir Data/Migrations `
+  -Project Basket `
+  -StartupProject API `
+  -Context BasketDbContext
+```
+
+Migration mới sẽ tạo ba tables: `shopping_carts`, `shopping_cart_items`, và `outbox_messages`.
+
+### Bước 4: Cập Nhật CheckoutBasket Handler — Dùng Outbox
+
+```csharp
+public record CheckoutBasketCommand(BasketCheckoutDto BasketCheckout)
+    : ICommand<CheckoutBasketResult>;
+
+public record CheckoutBasketResult(bool IsSuccess);
+
+public class CheckoutBasketCommandValidator
+    : AbstractValidator<CheckoutBasketCommand>
+{
+    public CheckoutBasketCommandValidator()
+    {
+        RuleFor(x => x.BasketCheckout).NotNull();
+        RuleFor(x => x.BasketCheckout.UserName).NotEmpty();
+    }
+}
+
+public class CheckoutBasketHandler(BasketDbContext dbContext)
+    : ICommandHandler<CheckoutBasketCommand, CheckoutBasketResult>
+{
+    public async Task<CheckoutBasketResult> Handle(
+        CheckoutBasketCommand command, CancellationToken cancellationToken)
+    {
+        // Bước 1: Lấy basket với total price từ database
+        var basket = await dbContext.ShoppingCarts
+            .AsNoTracking()
+            .Include(x => x.Items)
+            .SingleOrDefaultAsync(
+                x => x.UserName == command.BasketCheckout.UserName, cancellationToken)
+            ?? throw new BasketNotFoundException(command.BasketCheckout.UserName);
+
+        // Bước 2: Tạo integration event và set total price từ database
+        var eventMessage = command.BasketCheckout
+            .Adapt<BasketCheckoutIntegrationEvent>();
+        eventMessage = eventMessage with { TotalPrice = basket.TotalPrice };
+
+        // Bước 3+4: Atomic transaction — lưu outbox message VÀ xóa basket
+        await using var transaction = await dbContext.Database
+            .BeginTransactionAsync(cancellationToken);
+        try
+        {
+            // Xóa basket
+            var basketToDelete = await dbContext.ShoppingCarts
+                .SingleOrDefaultAsync(
+                    x => x.UserName == command.BasketCheckout.UserName, cancellationToken);
+            if (basketToDelete is not null)
+                dbContext.ShoppingCarts.Remove(basketToDelete);
+
+            // Lưu event vào outbox table
+            var outboxMessage = new OutboxMessage
+            {
+                Id = Guid.NewGuid(),
+                Type = typeof(BasketCheckoutIntegrationEvent).AssemblyQualifiedName!,
+                Content = JsonSerializer.Serialize(eventMessage),
+                OccurredOn = DateTime.UtcNow
+            };
+            dbContext.OutboxMessages.Add(outboxMessage);
+
+            await dbContext.SaveChangesAsync(cancellationToken);
+            await transaction.CommitAsync(cancellationToken);
+        }
+        catch
+        {
+            await transaction.RollbackAsync(cancellationToken);
+            throw;
+        }
+
+        return new CheckoutBasketResult(IsSuccess: true);
+    }
+}
+```
+
+**Tại sao inject `BasketDbContext` thay vì `IBasketRepository`?**
+
+Vì cần sử dụng `dbContext.Database.BeginTransactionAsync()` để tạo transaction explicit. Repository pattern không expose transaction management trực tiếp.
+
+### Bước 5: Background Service — Outbox Processor
+
+```csharp
+public class OutboxProcessor(
+    IServiceProvider serviceProvider,
+    IBus bus,
+    ILogger<OutboxProcessor> logger) : BackgroundService
+{
+    protected override async Task ExecuteAsync(CancellationToken stoppingToken)
+    {
+        while (!stoppingToken.IsCancellationRequested)
+        {
+            await ProcessOutboxMessages(stoppingToken);
+            await Task.Delay(TimeSpan.FromSeconds(10), stoppingToken);
+        }
+    }
+
+    private async Task ProcessOutboxMessages(CancellationToken cancellationToken)
+    {
+        using var scope = serviceProvider.CreateScope();
+        var dbContext = scope.ServiceProvider.GetRequiredService<BasketDbContext>();
+
+        var messages = await dbContext.OutboxMessages
+            .Where(m => m.ProcessedOn == null)
+            .ToListAsync(cancellationToken);
+
+        foreach (var message in messages)
+        {
+            try
+            {
+                var eventType = Type.GetType(message.Type);
+                var @event = JsonSerializer.Deserialize(message.Content, eventType!);
+
+                await bus.Publish(@event!, cancellationToken);
+
+                message.ProcessedOn = DateTime.UtcNow;
+                await dbContext.SaveChangesAsync(cancellationToken);
+
+                logger.LogInformation("Published outbox message: {Type}", message.Type);
+            }
+            catch (Exception ex)
+            {
+                logger.LogError(ex, "Failed to process outbox message: {Id}", message.Id);
+            }
+        }
+    }
+}
+```
+
+Đăng ký Background Service:
+
+```csharp
+public static IServiceCollection AddBasketModule(
+    this IServiceCollection services, IConfiguration configuration)
+{
+    // ... các services khác
+    services.AddHostedService<OutboxProcessor>();
+    return services;
+}
+```
+
+## Ordering Module — Consume BasketCheckout Event
+
+### BasketCheckoutIntegrationEventHandler
+
+```csharp
+public class BasketCheckoutIntegrationEventHandler(
+    ISender sender,
+    ILogger<BasketCheckoutIntegrationEventHandler> logger)
+    : IConsumer<BasketCheckoutIntegrationEvent>
+{
+    public async Task Consume(ConsumeContext<BasketCheckoutIntegrationEvent> context)
+    {
+        logger.LogInformation(
+            "Consuming BasketCheckoutIntegrationEvent for user: {UserName}",
+            context.Message.UserName);
+
+        var command = MapToCreateOrderCommand(context.Message);
+        await sender.Send(command);
+    }
+
+    private CreateOrderCommand MapToCreateOrderCommand(BasketCheckoutIntegrationEvent @event)
+    {
+        var shippingAddress = new AddressDto(
+            @event.FirstName, @event.LastName, @event.EmailAddress,
+            @event.AddressLine, @event.Country, @event.State, @event.ZipCode);
+
+        var payment = new PaymentDto(
+            @event.CardName, @event.CardNumber, @event.Expiration,
+            @event.CVV, @event.PaymentMethod);
+
+        var order = new OrderDto(
+            Id: Guid.NewGuid(),
+            CustomerId: @event.CustomerId,
+            OrderName: @event.UserName,
+            ShippingAddress: shippingAddress,
+            BillingAddress: shippingAddress,
+            Payment: payment,
+            Status: OrderStatus.Pending,
+            Items: new List<OrderItemDto>()
+        );
+
+        return new CreateOrderCommand(order);
+    }
+}
+```
+
+`IConsumer<TMessage>` là interface của MassTransit. Khi RabbitMQ nhận được `BasketCheckoutIntegrationEvent`, MassTransit tự động tìm và gọi `BasketCheckoutIntegrationEventHandler.Consume()`.
+
+### Đăng Ký Ordering Assembly trong MassTransit
+
+```csharp
+// Program.cs
+builder.Services.AddMassTransitWithAssemblies(
+    builder.Configuration,
+    typeof(BasketModule).Assembly,
+    typeof(OrderingModule).Assembly);  // Thêm ordering assembly
+```
+
+Sau khi thêm ordering assembly, MassTransit sẽ tự động discover `BasketCheckoutIntegrationEventHandler` và tạo consumer endpoint trong RabbitMQ.
+
+## So Sánh: Có Outbox vs Không Có Outbox
+
+| Khía cạnh | Không có Outbox | Có Outbox |
+|-----------|-----------------|-----------|
+| Atomicity | Không đảm bảo | Đảm bảo (ACID transaction) |
+| Message loss | Có thể mất | Không mất (stored in DB) |
+| Duplicate | Có thể xảy ra | Được kiểm soát (ProcessedOn) |
+| Complexity | Thấp | Cao hơn |
+| Reliability | Thấp | Cao |
+
+## Test End-to-End
+
+### Bước 1: Đảm bảo Docker services đang chạy
+
+```bash
+docker-compose up -d
+```
+
+Kiểm tra RabbitMQ dashboard tại `http://localhost:15672` (guest/guest).
+
+### Bước 2: Tạo basket trước
+
+```http
+POST /basket
+Content-Type: application/json
+
+{
+  "shoppingCart": {
+    "userName": "john_doe",
+    "items": [
+      {
+        "productId": "...",
+        "quantity": 2,
+        "price": 950.00,
+        "productName": "iPhone X",
+        "color": "Black"
+      }
+    ]
+  }
+}
+```
+
+### Bước 3: Checkout basket
+
+```http
+POST /basket/checkout
+Content-Type: application/json
+Authorization: Bearer {token}
+
+{
+  "basketCheckout": {
+    "userName": "john_doe",
+    "customerId": "...",
+    "firstName": "John",
+    "lastName": "Doe",
+    "emailAddress": "john@example.com",
+    "addressLine": "123 Main St",
+    "country": "US",
+    "state": "CA",
+    "zipCode": "90001",
+    "cardName": "John Doe",
+    "cardNumber": "1234-5678-9012-3456",
+    "expiration": "12/25",
+    "CVV": "123",
+    "paymentMethod": 1
+  }
+}
+```
+
+Response: `200 OK` với `{ "isSuccess": true }`
+
+### Bước 4: Xác nhận kết quả
+
+Trong PgAdmin:
+- Schema `basket`: Basket đã bị xóa; table `outbox_messages` có record với `processed_on` đã được set
+- Schema `ordering`: Table `orders` có order mới được tạo từ basket checkout event
+
+Trong RabbitMQ Management:
+- Queue cho `BasketCheckoutIntegrationEvent` hiển thị message đã được consumed
+
+## Luồng Hoàn Chỉnh với Outbox Pattern
+
+```
+Client
+    → POST /basket/checkout
+    → CheckoutBasketHandler
+        ┌─────── Atomic Transaction ──────────────┐
+        │  REMOVE basket from ShoppingCarts        │
+        │  INSERT event into OutboxMessages        │
+        └──────────────────────────────────────────┘
+        → SaveChangesAsync (commit)
+
+Background OutboxProcessor (mỗi 10 giây)
+    → SELECT unprocessed OutboxMessages
+    → Deserialize JSON → BasketCheckoutIntegrationEvent
+    → IBus.Publish(event) → RabbitMQ
+    → UPDATE OutboxMessage.ProcessedOn = UtcNow
+
+OrderingModule (MassTransit Consumer)
+    → Consume BasketCheckoutIntegrationEvent
+    → Map to CreateOrderCommand
+    → ISender.Send(command)
+    → CreateOrderHandler
+    → INSERT new Order into ordering.orders
+```
+
+Outbox Pattern đảm bảo:
+- **Atomicity:** Xóa basket và lưu event là một transaction
+- **Reliability:** Event không bao giờ bị mất ngay cả khi RabbitMQ tạm thời không khả dụng
+- **Consistency:** Database và message broker luôn nhất quán
+- **Idempotency:** `ProcessedOn` timestamp ngăn publish trùng lặp

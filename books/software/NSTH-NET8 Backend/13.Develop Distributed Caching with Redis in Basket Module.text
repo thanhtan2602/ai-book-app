@@ -1,0 +1,254 @@
+## Phát Triển Distributed Caching với Redis trong Basket Module
+
+Trong phần này, chúng ta sẽ tích hợp Redis vào Basket Module để triển khai distributed caching. Sau khi hoàn thiện kiến trúc Vertical Slice và các lớp của Basket Module, bây giờ chúng ta tập trung vào việc tích hợp Redis thông qua thư viện StackExchange.Redis và Scrutor nhằm kích hoạt distributed caching và tối ưu hóa hiệu suất truy vấn trước khi lấy dữ liệu từ PostgreSQL.
+
+Cụ thể, chúng ta sẽ:
+- Implement Repository Pattern và phát triển `BasketRepository`
+- Implement Proxy Pattern, Decorator Pattern và Scrutor library
+- Implement Cache-aside Pattern và Cache Invalidation với Redis
+- Phát triển `CachedBasketRepository` sử dụng Scrutor
+- Setup Redis làm distributed cache thông qua Docker Compose
+- Tích hợp Redis vào Basket Module để cache dữ liệu shopping cart
+- Tăng hiệu suất bằng cách giảm tải cho database
+
+---
+
+## Tại Sao Chọn Redis Cho Distributed Caching?
+
+Redis là một advanced key-value store nổi tiếng với hiệu suất cao. Nó thường được dùng cho caching, session storage, publish-subscribe systems và nhiều mục đích khác. Redis lưu trữ dữ liệu trong bộ nhớ (in-memory), cho phép truy cập dữ liệu cực nhanh và hỗ trợ nhiều cấu trúc dữ liệu đa dạng.
+
+Redis là lựa chọn xuất sắc cho kiến trúc Modular Monolith vì đặc tính phân tán của nó, cho phép các service truy cập dữ liệu dùng chung nhanh chóng và giảm tải lên database.
+
+---
+
+## IBasketRepository Interface
+
+Trước tiên, chúng ta tạo interface `IBasketRepository` để định nghĩa các contract cho các thao tác repository.
+
+```csharp
+// Modules/Basket/Data/Repository/IBasketRepository.cs
+public interface IBasketRepository
+{
+    Task<ShoppingCart> GetBasket(string username, bool asNoTracking = true,
+        CancellationToken cancellationToken = default);
+
+    Task<ShoppingCart> CreateBasket(ShoppingCart basket,
+        CancellationToken cancellationToken = default);
+
+    Task<bool> DeleteBasket(string username,
+        CancellationToken cancellationToken = default);
+
+    Task<int> SaveChangesAsync(CancellationToken cancellationToken = default);
+}
+```
+
+Interface này khai báo bốn phương thức tương ứng với các thao tác truy xuất, tạo mới, xóa và lưu thay đổi trên entity `ShoppingCart`. Tham số `asNoTracking` trong `GetBasket` xác định có theo dõi thay đổi entity trong Entity Framework hay không.
+
+---
+
+## BasketRepository — Triển Khai Với EF Core
+
+Tiếp theo, chúng ta implement `IBasketRepository` trong lớp `BasketRepository` sử dụng `BasketDbContext`:
+
+```csharp
+public class BasketRepository(BasketDbContext dbContext) : IBasketRepository
+{
+    public async Task<ShoppingCart> GetBasket(string username,
+        bool asNoTracking = true, CancellationToken cancellationToken = default)
+    {
+        var query = dbContext.ShoppingCarts
+            .Include(x => x.Items)
+            .Where(x => x.UserName == username);
+
+        if (asNoTracking)
+            query = query.AsNoTracking();
+
+        var basket = await query.SingleOrDefaultAsync(cancellationToken);
+
+        if (basket is null)
+            throw new BasketNotFoundException(username);
+
+        return basket;
+    }
+
+    public async Task<ShoppingCart> CreateBasket(ShoppingCart basket,
+        CancellationToken cancellationToken = default)
+    {
+        dbContext.ShoppingCarts.Add(basket);
+        await dbContext.SaveChangesAsync(cancellationToken);
+        return basket;
+    }
+
+    public async Task<bool> DeleteBasket(string username,
+        CancellationToken cancellationToken = default)
+    {
+        var basket = await GetBasket(username, asNoTracking: false, cancellationToken);
+        dbContext.ShoppingCarts.Remove(basket);
+        await dbContext.SaveChangesAsync(cancellationToken);
+        return true;
+    }
+
+    public async Task<int> SaveChangesAsync(CancellationToken cancellationToken = default)
+        => await dbContext.SaveChangesAsync(cancellationToken);
+}
+```
+
+`BasketRepository` sử dụng primary constructor để inject `BasketDbContext`. Phương thức `GetBasket` dùng `SingleOrDefaultAsync` thay vì `FirstOrDefaultAsync` vì `username` là index value, giúp truy vấn hiệu quả hơn. Sau khi hoàn thiện, đăng ký vào DI container:
+
+```csharp
+services.AddScoped<IBasketRepository, BasketRepository>();
+```
+
+---
+
+## Cache-Aside Pattern
+
+Cache-aside (còn gọi là lazy-loading) là chiến lược caching phổ biến nhất trong microservices. Quy trình hoạt động gồm ba bước:
+
+1. Khi client cần truy cập dữ liệu, nó kiểm tra cache trước.
+2. Nếu dữ liệu có trong cache (cache hit), lấy từ cache và trả về.
+3. Nếu không có (cache miss), lấy từ database, lưu vào cache, rồi trả về.
+
+Mô hình này cải thiện hiệu suất bằng cách giảm số lần truy vấn database tốn kém. Tuy nhiên, cần lưu ý rằng cache có thể cần được làm mới khi dữ liệu trong database thay đổi — đây chính là bài toán **Cache Invalidation**.
+
+---
+
+## Proxy Pattern và Decorator Pattern
+
+**Proxy Pattern** cung cấp một đối tượng thay thế để kiểm soát quyền truy cập vào đối tượng gốc. Một ứng dụng phổ biến là lazy loading, kiểm soát truy cập và logging.
+
+**Decorator Pattern** thêm hành vi vào đối tượng một cách linh hoạt mà không thay đổi cấu trúc của nó. Nó sử dụng một tập các decorator class để mở rộng chức năng mà không thay đổi code gốc.
+
+Trong trường hợp của chúng ta: `CachedBasketRepository` vừa là một Proxy (inject và forward calls đến `BasketRepository`), vừa là Decorator (bổ sung caching logic).
+
+---
+
+## Scrutor Library
+
+Scrutor là thư viện .NET mở rộng IoC container tích hợp của ASP.NET Core, cung cấp khả năng scan và đăng ký service linh hoạt hơn. Đặc biệt hữu ích khi implement Decorator Pattern theo cách sạch sẽ và dễ quản lý.
+
+Cách đăng ký với Scrutor:
+
+```csharp
+services.AddScoped<IBasketRepository, BasketRepository>();
+services.Decorate<IBasketRepository, CachedBasketRepository>();
+```
+
+Dòng `Decorate` bọc `BasketRepository` bằng `CachedBasketRepository`, thêm caching logic một cách trong suốt.
+
+---
+
+## CachedBasketRepository — Tích Hợp Redis
+
+`CachedBasketRepository` implement `IBasketRepository` và đồng thời inject một instance `IBasketRepository` khác (chính là `BasketRepository`) và `IDistributedCache`:
+
+```csharp
+public class CachedBasketRepository(
+    IBasketRepository repository,
+    IDistributedCache cache) : IBasketRepository
+{
+    public async Task<ShoppingCart> GetBasket(string username,
+        bool asNoTracking = true, CancellationToken cancellationToken = default)
+    {
+        // Kiểm tra cache
+        var cachedBasket = await cache.GetStringAsync(username, cancellationToken);
+        if (!string.IsNullOrEmpty(cachedBasket))
+            return JsonSerializer.Deserialize<ShoppingCart>(cachedBasket)!;
+
+        // Cache miss — lấy từ database
+        var basket = await repository.GetBasket(username, asNoTracking, cancellationToken);
+
+        // Lưu vào cache
+        await cache.SetStringAsync(username,
+            JsonSerializer.Serialize(basket), cancellationToken);
+
+        return basket;
+    }
+
+    public async Task<ShoppingCart> CreateBasket(ShoppingCart basket,
+        CancellationToken cancellationToken = default)
+    {
+        await repository.CreateBasket(basket, cancellationToken);
+        // Invalidate cache
+        await cache.SetStringAsync(basket.UserName,
+            JsonSerializer.Serialize(basket), cancellationToken);
+        return basket;
+    }
+
+    public async Task<bool> DeleteBasket(string username,
+        CancellationToken cancellationToken = default)
+    {
+        await repository.DeleteBasket(username, cancellationToken);
+        // Xóa khỏi cache
+        await cache.RemoveAsync(username, cancellationToken);
+        return true;
+    }
+
+    public async Task<int> SaveChangesAsync(CancellationToken cancellationToken = default)
+        => await repository.SaveChangesAsync(cancellationToken);
+}
+```
+
+`IDistributedCache` là interface chuẩn của .NET cho distributed cache, cung cấp các phương thức `GetAsync`, `SetAsync`, `RefreshAsync`, `RemoveAsync` — có thể dùng với Redis, SQL Server, hoặc Azure Cosmos DB.
+
+---
+
+## Đăng Ký StackExchange.Redis
+
+Để sử dụng Redis làm backend cho `IDistributedCache`, cần cài đặt package:
+
+```
+Microsoft.Extensions.Caching.StackExchangeRedis
+```
+
+Package này được cài vào **Shared class library** để mọi module đều có thể sử dụng. Sau đó đăng ký trong module:
+
+```csharp
+services.AddStackExchangeRedisCache(options =>
+{
+    options.Configuration = configuration.GetConnectionString("Redis");
+});
+```
+
+---
+
+## Setup Redis với Docker Compose
+
+Thêm Redis vào `docker-compose.yml`:
+
+```yaml
+distributedcache:
+  image: redis
+```
+
+Cấu hình trong `docker-compose.override.yml`:
+
+```yaml
+distributedcache:
+  container_name: distributedcache
+  restart: always
+  ports:
+    - "6379:6379"
+```
+
+Sau đó cập nhật connection string trong `appsettings.json`:
+
+```json
+"ConnectionStrings": {
+    "Redis": "localhost:6379"
+}
+```
+
+---
+
+## Custom JsonConverter Cho ShoppingCart
+
+Khi serialize/deserialize `ShoppingCart` để lưu vào Redis, cần đảm bảo các kiểu dữ liệu phức tạp được xử lý đúng. Có thể cần custom `JsonConverter` để xử lý các property đặc biệt của domain entity, đảm bảo dữ liệu được lưu và đọc ra từ cache chính xác.
+
+---
+
+## Tổng Kết
+
+Bằng cách kết hợp Cache-aside Pattern, Proxy Pattern, Decorator Pattern và Scrutor library, chúng ta đã xây dựng một cơ chế caching mạnh mẽ và trong suốt cho Basket Module. `CachedBasketRepository` hoạt động như một lớp caching trong suốt — các handler class không cần biết cache có tồn tại hay không, chỉ cần inject `IBasketRepository` là đủ.
+
+Kiến trúc này không chỉ cải thiện hiệu suất đáng kể mà còn tuân thủ các nguyên tắc SOLID, đặc biệt là Open/Closed Principle (mở rộng không sửa đổi) và Dependency Inversion Principle.

@@ -1,0 +1,675 @@
+Trong phần này, chúng ta sẽ phát triển Ordering Module sử dụng Vertical Slice Architecture và CQRS. Nhìn vào bức tranh tổng thể, chúng ta đã hoàn thành Catalog Module, Basket Module và Identity Module. Bây giờ đến lúc xây dựng Ordering Module với kiến trúc tương tự trong ứng dụng Modular Monolith.
+
+## Tổng Quan Ordering Module
+
+Kiến trúc nội bộ của Ordering Module rất giống với Catalog và Basket Module — chúng ta vẫn áp dụng Vertical Slice Architecture, Domain Driven Design, CQRS với MediatR, và các NuGet packages đã quen thuộc. Vì lý do đó, thay vì xây dựng từ đầu từng bước, chúng ta sẽ tăng tốc quá trình phát triển và review code cùng nhau theo từng layer.
+
+Ordering Module bao gồm:
+
+- **Domain layer:** Implement các tactical DDD patterns — entities, aggregate roots, value objects, domain events
+- **Infrastructure layer:** EF Core code-first, migrations, seeding, kết nối PostgreSQL, cấu hình relationships và value objects dưới dạng complex properties, EF Core Interceptors (SaveChanges interceptor)
+- **Application layer:** CQRS với MediatR, command/query handlers, pipeline behaviors (validation, logging), domain event handlers
+- **Presentation/API layer:** Carter cho Minimal API endpoints, custom exceptions
+
+## Phân Tích Domain
+
+### Domain Models
+
+Hai domain model chính của Ordering Module là **Order** và **OrderItem**. Ngoài ra có thể mở rộng với Customer và Products từ các bounded context khác.
+
+**Order** là aggregate root với các properties:
+- `CustomerId` — ID khách hàng
+- `OrderName` — tên đơn hàng
+- `ShippingAddress` — địa chỉ giao hàng (value object)
+- `BillingAddress` — địa chỉ thanh toán (value object)
+- `Payment` — thông tin thanh toán (value object)
+- `Status` — trạng thái đơn hàng
+- `Items` — danh sách OrderItem (one-to-many)
+
+**OrderItem** là entity liên kết với Order, chứa: `ProductId`, `Quantity`, `Price`.
+
+### Application Use Cases
+
+Các use case chính của Ordering Module:
+
+| Use Case | Loại | Mô tả |
+|----------|------|--------|
+| GetOrders | Query | Lấy danh sách đơn hàng có phân trang |
+| GetOrderById | Query | Lấy đơn hàng theo ID |
+| CreateOrder | Command | Tạo đơn hàng mới |
+| UpdateOrder | Command | Cập nhật đơn hàng |
+| DeleteOrder | Command | Xóa đơn hàng |
+
+Ngoài ra có các use case bất đồng bộ:
+- **Basket Checkout:** Consume sự kiện từ RabbitMQ via MassTransit, tạo order mới
+- **Order Fulfillment:** Raise domain event → integration event, thông báo billing và shipment
+
+### REST API Endpoints
+
+| Method | URL | Mô tả |
+|--------|-----|--------|
+| GET | /orders | Lấy danh sách đơn hàng có phân trang |
+| GET | /orders/{orderName} | Lấy đơn hàng theo tên |
+| GET | /orders/customer/{customerName} | Lấy đơn hàng theo khách hàng |
+| POST | /orders | Tạo đơn hàng mới |
+| PUT | /orders | Cập nhật đơn hàng |
+| DELETE | /orders/{id} | Xóa đơn hàng theo ID |
+
+## Domain Entities — Tactical DDD
+
+### Order Aggregate
+
+```csharp
+public class Order : Aggregate<Guid>
+{
+    private readonly List<OrderItem> _orderItems = new();
+    public IReadOnlyList<OrderItem> OrderItems => _orderItems.AsReadOnly();
+
+    public Guid CustomerId { get; private set; }
+    public OrderName OrderName { get; private set; }
+    public Address ShippingAddress { get; private set; }
+    public Address BillingAddress { get; private set; }
+    public Payment Payment { get; private set; }
+    public OrderStatus Status { get; private set; }
+    public decimal TotalPrice { get; private set; }
+
+    public static Order Create(Guid id, Guid customerId, string orderName,
+        Address shippingAddress, Address billingAddress, Payment payment)
+    {
+        var order = new Order
+        {
+            Id = id,
+            CustomerId = customerId,
+            OrderName = OrderName.Of(orderName),
+            ShippingAddress = shippingAddress,
+            BillingAddress = billingAddress,
+            Payment = payment,
+            Status = OrderStatus.Pending
+        };
+
+        order.AddDomainEvent(new OrderCreatedEvent(order));
+        return order;
+    }
+
+    public void Add(Guid productId, int quantity, decimal price)
+    {
+        ArgumentOutOfRangeException.ThrowIfNegativeOrZero(quantity);
+        ArgumentOutOfRangeException.ThrowIfNegativeOrZero(price);
+
+        var existingItem = _orderItems
+            .FirstOrDefault(x => x.ProductId == productId);
+
+        if (existingItem != null)
+            existingItem.Increase(quantity);
+        else
+            _orderItems.Add(new OrderItem(Id, productId, quantity, price));
+    }
+
+    public void Remove(Guid productId)
+    {
+        var item = _orderItems
+            .FirstOrDefault(x => x.ProductId == productId)
+            ?? throw new DomainException($"Order item with productId {productId} not found.");
+
+        _orderItems.Remove(item);
+    }
+}
+```
+
+Phương thức `Create` là factory method tạo order entity, đồng thời raise `OrderCreatedEvent`. `Add` kiểm tra xem product đã có trong đơn hàng chưa — nếu có thì tăng quantity, nếu chưa có thì tạo OrderItem mới. `Remove` tìm và xóa item theo productId.
+
+### OrderItem Entity
+
+```csharp
+public class OrderItem : Entity<Guid>
+{
+    internal OrderItem(Guid orderId, Guid productId, int quantity, decimal price)
+    {
+        Id = Guid.NewGuid();
+        OrderId = orderId;
+        ProductId = productId;
+        Quantity = quantity;
+        Price = price;
+    }
+
+    public Guid OrderId { get; private set; }
+    public Guid ProductId { get; private set; }
+    public int Quantity { get; private set; }
+    public decimal Price { get; private set; }
+
+    public void Increase(int quantity) => Quantity += quantity;
+}
+```
+
+Constructor là `internal` — OrderItem chỉ được tạo từ bên trong Order aggregate, không thể tạo trực tiếp từ bên ngoài. Đây là một trong những nguyên tắc quan trọng của DDD.
+
+### Value Objects
+
+**Address:**
+
+```csharp
+public record Address
+{
+    public string FirstName { get; } = default!;
+    public string LastName { get; } = default!;
+    public string EmailAddress { get; } = default!;
+    public string AddressLine { get; } = default!;
+    public string Country { get; } = default!;
+    public string State { get; } = default!;
+    public string ZipCode { get; } = default!;
+
+    protected Address() { }
+
+    private Address(string firstName, string lastName, string emailAddress,
+        string addressLine, string country, string state, string zipCode)
+    {
+        FirstName = firstName;
+        LastName = lastName;
+        EmailAddress = emailAddress;
+        AddressLine = addressLine;
+        Country = country;
+        State = state;
+        ZipCode = zipCode;
+    }
+
+    public static Address Of(string firstName, string lastName, string emailAddress,
+        string addressLine, string country, string state, string zipCode)
+    {
+        ArgumentException.ThrowIfNullOrWhiteSpace(firstName);
+        ArgumentException.ThrowIfNullOrWhiteSpace(emailAddress);
+        return new Address(firstName, lastName, emailAddress, addressLine, country, state, zipCode);
+    }
+}
+```
+
+**Payment:**
+
+```csharp
+public record Payment
+{
+    public string CardName { get; } = default!;
+    public string CardNumber { get; } = default!;
+    public string Expiration { get; } = default!;
+    public string CVV { get; } = default!;  // C phải uppercase
+    public int PaymentMethod { get; }
+
+    protected Payment() { }
+
+    private Payment(string cardName, string cardNumber, string expiration,
+        string cvv, int paymentMethod) { ... }
+
+    public static Payment Of(string cardName, string cardNumber, string expiration,
+        string cvv, int paymentMethod)
+    {
+        ArgumentException.ThrowIfNullOrWhiteSpace(cardNumber);
+        ArgumentException.ThrowIfNullOrWhiteSpace(cvv);
+        return new Payment(cardName, cardNumber, expiration, cvv, paymentMethod);
+    }
+}
+```
+
+**Lưu ý quan trọng:** Tên property `CVV` phải có chữ C uppercase để Mapster mapping hoạt động đúng.
+
+### Domain Event
+
+```csharp
+public record OrderCreatedEvent(Order Order) : IDomainEvent;
+```
+
+Domain event được raise khi tạo order mới, sau đó được dispatch qua EF Core interceptor và xử lý bởi `OrderCreatedEventHandler`:
+
+```csharp
+public class OrderCreatedEventHandler
+    : INotificationHandler<OrderCreatedEvent>
+{
+    public Task Handle(OrderCreatedEvent notification, CancellationToken cancellationToken)
+    {
+        // Log hoặc trigger additional logic
+        return Task.CompletedTask;
+    }
+}
+```
+
+## Data Infrastructure Layer
+
+### OrderingDbContext
+
+```csharp
+public class OrderingDbContext : DbContext
+{
+    public DbSet<Order> Orders => Set<Order>();
+    public DbSet<OrderItem> OrderItems => Set<OrderItem>();
+
+    public OrderingDbContext(DbContextOptions<OrderingDbContext> options)
+        : base(options) { }
+
+    protected override void OnModelCreating(ModelBuilder modelBuilder)
+    {
+        modelBuilder.HasDefaultSchema("ordering");
+        modelBuilder.ApplyConfigurationsFromAssembly(Assembly.GetExecutingAssembly());
+        base.OnModelCreating(modelBuilder);
+    }
+}
+```
+
+Schema `ordering` cung cấp data isolation — tất cả tables của Ordering Module được tạo trong schema riêng trong cùng một PostgreSQL database.
+
+### Entity Configurations
+
+**OrderConfiguration** sử dụng EF Core complex properties để map value objects:
+
+```csharp
+public class OrderConfiguration : IEntityTypeConfiguration<Order>
+{
+    public void Configure(EntityTypeBuilder<Order> builder)
+    {
+        builder.HasKey(x => x.Id);
+        builder.Property(x => x.CustomerId).IsRequired();
+
+        builder.HasMany(x => x.OrderItems)
+            .WithOne()
+            .HasForeignKey(x => x.OrderId);
+
+        // Complex properties — map value objects thành columns
+        builder.ComplexProperty(x => x.ShippingAddress, addr =>
+        {
+            addr.Property(a => a.FirstName).HasColumnName("ShippingFirstName").IsRequired();
+            addr.Property(a => a.LastName).HasColumnName("ShippingLastName");
+            addr.Property(a => a.EmailAddress).HasColumnName("ShippingEmailAddress");
+            addr.Property(a => a.AddressLine).HasColumnName("ShippingAddressLine");
+            addr.Property(a => a.Country).HasColumnName("ShippingCountry");
+            addr.Property(a => a.State).HasColumnName("ShippingState");
+            addr.Property(a => a.ZipCode).HasColumnName("ShippingZipCode");
+        });
+
+        builder.ComplexProperty(x => x.BillingAddress, addr =>
+        {
+            // Tương tự ShippingAddress...
+        });
+
+        builder.ComplexProperty(x => x.Payment, pmt =>
+        {
+            pmt.Property(p => p.CardName).HasColumnName("PaymentCardName");
+            pmt.Property(p => p.CardNumber).HasColumnName("PaymentCardNumber").IsRequired();
+            pmt.Property(p => p.Expiration).HasColumnName("PaymentExpiration");
+            pmt.Property(p => p.CVV).HasColumnName("PaymentCVV");
+            pmt.Property(p => p.PaymentMethod).HasColumnName("PaymentMethod");
+        });
+    }
+}
+```
+
+`ComplexProperty` là tính năng của EF Core cho phép map value object (record type) thành các columns trong cùng một table, thay vì tạo bảng riêng.
+
+### Đăng Ký DI và Migrations
+
+```csharp
+public static IServiceCollection AddOrderingModule(
+    this IServiceCollection services, IConfiguration configuration)
+{
+    services.AddDbContext<OrderingDbContext>(options =>
+        options
+            .AddInterceptors(new AuditableEntityInterceptor(), new DispatchDomainEventsInterceptor())
+            .UseNpgsql(configuration.GetConnectionString("Database")));
+
+    return services;
+}
+
+public static IApplicationBuilder UseOrderingModule(this IApplicationBuilder app)
+{
+    app.UseMigration<OrderingDbContext>();
+    return app;
+}
+```
+
+**Tạo migrations:**
+```
+Add-Migration InitialCreate `
+  -OutputDir Data/Migrations `
+  -Project Ordering `
+  -StartupProject API `
+  -Context OrderingDbContext
+```
+
+Migration tạo `ordering` schema và hai tables `orders` + `order_items` với đầy đủ columns cho value objects, cùng foreign key constraints cho relationship one-to-many.
+
+## Application Use Cases
+
+### DTOs
+
+```csharp
+public record OrderDto(
+    Guid Id, Guid CustomerId, string OrderName,
+    AddressDto ShippingAddress, AddressDto BillingAddress,
+    PaymentDto Payment, OrderStatus Status,
+    List<OrderItemDto> Items);
+
+public record OrderItemDto(Guid Id, Guid OrderId, Guid ProductId, int Quantity, decimal Price);
+
+public record AddressDto(string FirstName, string LastName, string EmailAddress,
+    string AddressLine, string Country, string State, string ZipCode);
+
+public record PaymentDto(string CardName, string CardNumber, string Expiration,
+    string CVV, int PaymentMethod);
+```
+
+### CreateOrder Handler
+
+```csharp
+public record CreateOrderCommand(OrderDto Order) : ICommand<CreateOrderResult>;
+public record CreateOrderResult(Guid Id);
+
+public class CreateOrderCommandValidator : AbstractValidator<CreateOrderCommand>
+{
+    public CreateOrderCommandValidator()
+    {
+        RuleFor(x => x.Order.OrderName).NotEmpty();
+        RuleFor(x => x.Order.CustomerId).NotEmpty();
+    }
+}
+
+public class CreateOrderCommandHandler(OrderingDbContext dbContext)
+    : ICommandHandler<CreateOrderCommand, CreateOrderResult>
+{
+    public async Task<CreateOrderResult> Handle(
+        CreateOrderCommand command, CancellationToken cancellationToken)
+    {
+        var order = CreateNewOrder(command.Order);
+        dbContext.Orders.Add(order);
+        await dbContext.SaveChangesAsync(cancellationToken);
+        return new CreateOrderResult(order.Id);
+    }
+
+    private Order CreateNewOrder(OrderDto dto)
+    {
+        var shippingAddress = Address.Of(
+            dto.ShippingAddress.FirstName, dto.ShippingAddress.LastName,
+            dto.ShippingAddress.EmailAddress, dto.ShippingAddress.AddressLine,
+            dto.ShippingAddress.Country, dto.ShippingAddress.State,
+            dto.ShippingAddress.ZipCode);
+
+        var billingAddress = Address.Of(/* tương tự */);
+        var payment = Payment.Of(
+            dto.Payment.CardName, dto.Payment.CardNumber,
+            dto.Payment.Expiration, dto.Payment.CVV, dto.Payment.PaymentMethod);
+
+        var order = Order.Create(
+            Guid.NewGuid(), dto.CustomerId, dto.OrderName,
+            shippingAddress, billingAddress, payment);
+
+        foreach (var item in dto.Items)
+            order.Add(item.ProductId, item.Quantity, item.Price);
+
+        return order;
+    }
+}
+```
+
+### DeleteOrder Handler
+
+```csharp
+public record DeleteOrderCommand(Guid OrderId) : ICommand<DeleteOrderResult>;
+public record DeleteOrderResult(bool IsSuccess);
+
+public class DeleteOrderCommandHandler(OrderingDbContext dbContext)
+    : ICommandHandler<DeleteOrderCommand, DeleteOrderResult>
+{
+    public async Task<DeleteOrderResult> Handle(
+        DeleteOrderCommand command, CancellationToken cancellationToken)
+    {
+        var order = await dbContext.Orders
+            .FindAsync([command.OrderId], cancellationToken)
+            ?? throw new OrderNotFoundException(command.OrderId);
+
+        dbContext.Orders.Remove(order);
+        await dbContext.SaveChangesAsync(cancellationToken);
+        return new DeleteOrderResult(IsSuccess: true);
+    }
+}
+```
+
+### Custom Exception
+
+```csharp
+public class OrderNotFoundException(Guid id)
+    : NotFoundException("Order", id);
+```
+
+### GetOrders Handler — Phân Trang
+
+```csharp
+public record GetOrdersQuery(PaginationRequest Pagination)
+    : IQuery<GetOrdersResult>;
+
+public record GetOrdersResult(PaginatedResult<OrderDto> Orders);
+
+public class GetOrdersQueryHandler(OrderingDbContext dbContext)
+    : IQueryHandler<GetOrdersQuery, GetOrdersResult>
+{
+    public async Task<GetOrdersResult> Handle(
+        GetOrdersQuery query, CancellationToken cancellationToken)
+    {
+        var pageIndex = query.Pagination.PageIndex;
+        var pageSize = query.Pagination.PageSize;
+
+        var totalCount = await dbContext.Orders.LongCountAsync(cancellationToken);
+        var orders = await dbContext.Orders
+            .Include(x => x.OrderItems)
+            .OrderBy(x => x.OrderName)
+            .Skip(pageSize * pageIndex)
+            .Take(pageSize)
+            .ToListAsync(cancellationToken);
+
+        var dtos = orders.Adapt<List<OrderDto>>();
+        return new GetOrdersResult(
+            new PaginatedResult<OrderDto>(pageIndex, pageSize, totalCount, dtos));
+    }
+}
+```
+
+### GetOrderById Handler
+
+```csharp
+public record GetOrderByIdQuery(Guid Id) : IQuery<GetOrderByIdResult>;
+public record GetOrderByIdResult(OrderDto Order);
+
+public class GetOrderByIdQueryHandler(OrderingDbContext dbContext)
+    : IQueryHandler<GetOrderByIdQuery, GetOrderByIdResult>
+{
+    public async Task<GetOrderByIdResult> Handle(
+        GetOrderByIdQuery query, CancellationToken cancellationToken)
+    {
+        var order = await dbContext.Orders
+            .Include(x => x.OrderItems)
+            .SingleOrDefaultAsync(x => x.Id == query.Id, cancellationToken)
+            ?? throw new OrderNotFoundException(query.Id);
+
+        var dto = order.Adapt<OrderDto>();
+        return new GetOrderByIdResult(dto);
+    }
+}
+```
+
+## API Endpoints với Carter
+
+### CreateOrder Endpoint
+
+```csharp
+public record CreateOrderRequest(OrderDto Order);
+public record CreateOrderResponse(Guid Id);
+
+public class CreateOrderEndpoint : ICarterModule
+{
+    public void AddRoutes(IEndpointRouteBuilder app)
+    {
+        app.MapPost("/orders", async (CreateOrderRequest request, ISender sender) =>
+        {
+            var command = request.Adapt<CreateOrderCommand>();
+            var result = await sender.Send(command);
+            var response = result.Adapt<CreateOrderResponse>();
+            return Results.Created($"/orders/{response.Id}", response);
+        })
+        .WithSummary("Create Order")
+        .Produces<CreateOrderResponse>(StatusCodes.Status201Created)
+        .ProducesProblem(StatusCodes.Status400BadRequest);
+    }
+}
+```
+
+### DeleteOrder Endpoint
+
+```csharp
+public record DeleteOrderResponse(bool IsSuccess);
+
+public class DeleteOrderEndpoint : ICarterModule
+{
+    public void AddRoutes(IEndpointRouteBuilder app)
+    {
+        app.MapDelete("/orders/{id}", async (Guid id, ISender sender) =>
+        {
+            var result = await sender.Send(new DeleteOrderCommand(id));
+            var response = result.Adapt<DeleteOrderResponse>();
+            return Results.Ok(response);
+        })
+        .WithSummary("Delete Order")
+        .Produces<DeleteOrderResponse>(StatusCodes.Status200OK)
+        .ProducesProblem(StatusCodes.Status404NotFound);
+    }
+}
+```
+
+### GetOrders Endpoint — Phân Trang
+
+```csharp
+public record GetOrdersResponse(PaginatedResult<OrderDto> Orders);
+
+public class GetOrdersEndpoint : ICarterModule
+{
+    public void AddRoutes(IEndpointRouteBuilder app)
+    {
+        app.MapGet("/orders", async ([AsParameters] PaginationRequest request, ISender sender) =>
+        {
+            var query = request.Adapt<GetOrdersQuery>();
+            var result = await sender.Send(query);
+            var response = result.Adapt<GetOrdersResponse>();
+            return Results.Ok(response);
+        })
+        .WithSummary("Get Orders with Pagination")
+        .Produces<GetOrdersResponse>(StatusCodes.Status200OK);
+    }
+}
+```
+
+### GetOrderById Endpoint
+
+```csharp
+public record GetOrderByIdResponse(OrderDto Order);
+
+public class GetOrderByIdEndpoint : ICarterModule
+{
+    public void AddRoutes(IEndpointRouteBuilder app)
+    {
+        app.MapGet("/orders/{id}", async (Guid id, ISender sender) =>
+        {
+            var result = await sender.Send(new GetOrderByIdQuery(id));
+            var response = result.Adapt<GetOrderByIdResponse>();
+            return Results.Ok(response);
+        })
+        .WithSummary("Get Order by Id")
+        .Produces<GetOrderByIdResponse>(StatusCodes.Status200OK)
+        .ProducesProblem(StatusCodes.Status404NotFound);
+    }
+}
+```
+
+## Đăng Ký Carter và MediatR
+
+Ordering Module không tự đăng ký Carter và MediatR — các services này được đăng ký tập trung trong `Program.cs` của API project:
+
+```csharp
+// Program.cs
+var orderingAssembly = typeof(OrderingModule).Assembly;
+
+builder.Services.AddCarterWithAssemblies(orderingAssembly);
+builder.Services.AddMediatRWithAssemblies(orderingAssembly);
+// MassTransit chưa cần thêm ordering assembly ở đây
+// vì chưa có async communication (sẽ thêm ở phần Basket Checkout)
+```
+
+## Test với Postman
+
+### Create Order
+
+```http
+POST /orders
+Content-Type: application/json
+
+{
+  "order": {
+    "customerId": "...",
+    "orderName": "Order001",
+    "shippingAddress": {
+      "firstName": "John", "lastName": "Doe",
+      "emailAddress": "john@example.com",
+      "addressLine": "123 Main St",
+      "country": "US", "state": "CA", "zipCode": "90001"
+    },
+    "billingAddress": { ... },
+    "payment": {
+      "cardName": "John Doe",
+      "cardNumber": "1234-5678-9012-3456",
+      "expiration": "12/25",
+      "CVV": "123",
+      "paymentMethod": 1
+    },
+    "items": [
+      { "productId": "...", "quantity": 2, "price": 950.00 },
+      { "productId": "...", "quantity": 1, "price": 250.00 }
+    ]
+  }
+}
+```
+
+Response: `201 Created` với `{ "id": "..." }`
+
+Bạn có thể xác nhận trong PgAdmin: dưới schema `ordering` sẽ thấy table `orders` và `order_items` với dữ liệu vừa tạo, bao gồm các columns từ value objects (shipping/billing address và payment).
+
+### Get Order by ID
+
+```http
+GET /orders/{id}
+```
+
+Response: `200 OK` với đầy đủ order details, addresses, payment, và items.
+
+### Get Orders với Pagination
+
+```http
+GET /orders?pageIndex=0&pageSize=10
+```
+
+Response: `200 OK` với paginated result, bao gồm `data` (danh sách orders) và metadata phân trang.
+
+### Delete Order
+
+```http
+DELETE /orders/{id}
+```
+
+Response: `200 OK` với `{ "isSuccess": true }`
+
+## Luồng Hoàn Chỉnh
+
+```
+HTTP Request
+    → Carter Endpoint (ICarterModule)
+    → request.Adapt<Command/Query>() [Mapster]
+    → ISender.Send() [MediatR]
+    → Validation Pipeline (FluentValidation)
+    → Logging Pipeline (Serilog)
+    → Handler.Handle() [EF Core + Domain Logic]
+    → result.Adapt<Response>() [Mapster]
+    → HTTP Response
+```
+
+Ordering Module hoàn chỉnh theo đúng kiến trúc Vertical Slice với DDD, CQRS, và Minimal API — nhất quán với Catalog và Basket Module trong ứng dụng Modular Monolith.

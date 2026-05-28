@@ -1,0 +1,35 @@
+Chào mừng bạn đến với khóa học về Azure Function, Logic App, Blob Storage và Redis Cache dành cho lập trình viên .NET. Tôi tên là Bourgain và trong khóa học này chúng ta sẽ tập trung vào một số dịch vụ Azure quan trọng nhất dành cho các lập trình viên .NET.
+
+Azure cung cấp một loạt các dịch vụ mạnh mẽ, nhưng nhiều lập trình viên .NET chưa thực sự nhận thức đầy đủ về chúng. Những dịch vụ này có thể giảm đáng kể thời gian phát triển. Những gì có thể tốn gấp đôi hoặc gấp ba công sức khi sử dụng cách tiếp cận .NET truyền thống, hoàn toàn có thể thực hiện nhanh hơn và hiệu quả hơn với các công cụ Azure phù hợp.
+
+## Hành trình học tập
+
+Chúng ta sẽ bắt đầu với **Azure Blob Storage** - giải pháp lưu trữ dữ liệu trên nền tảng đám mây của Microsoft. Đây là dịch vụ lý tưởng để tải lên và lưu trữ các file lớn như hình ảnh, video, tài liệu và nhiều loại khác. Chúng ta sẽ xây dựng một ứng dụng .NET để tải file lên Blob Storage và tương tác với các storage container. Bạn cũng sẽ học về các cấp độ truy cập khác nhau và cách quản lý quyền bằng SAS Token.
+
+Tiếp theo, chúng ta sẽ đi sâu vào **Azure Function** - một phần cốt lõi của điện toán serverless. Azure Function cho phép bạn triển khai và chạy code mà không cần lo lắng về hạ tầng máy chủ hay cấu hình phức tạp. Bạn có thể viết function bằng nhiều ngôn ngữ như C#, Java, Python và TypeScript, cho phép bạn tập trung hoàn toàn vào logic của ứng dụng trong khi Azure lo liệu phần còn lại.
+
+Sau đó, chúng ta sẽ khám phá **Azure Logic Apps** - nền tảng dựa trên đám mây để xây dựng các workflow tự động, tích hợp với ứng dụng, dữ liệu và dịch vụ của bạn. Với giao diện thiết kế trực quan và các connector có sẵn, Logic Apps giúp bạn tạo ra các workflow mạnh mẽ mà không cần viết một dòng code nào.
+
+Cuối cùng, chúng ta sẽ khám phá **Azure Cache for Redis** - dịch vụ caching trong bộ nhớ được quản lý hoàn toàn, giúp nâng cao hiệu suất và khả năng mở rộng của ứng dụng. Chúng ta sẽ khởi tạo dịch vụ Redis trên Azure Portal và tích hợp vào ứng dụng .NET.
+
+Xuyên suốt khóa học, tôi sẽ hướng dẫn bạn từng bước qua các khái niệm cơ bản của từng dịch vụ và cách áp dụng chúng trong các tình huống thực tế. Đây là một khóa học thực hành - chúng ta sẽ xây dựng một dự án MVC nhỏ và tích hợp với Blob Storage, Azure Function và Redis Cache, cho bạn nền tảng vững chắc về các dịch vụ thiết yếu mà một lập trình viên .NET cần biết trên Azure Portal.
+
+## Tổng quan nội dung khóa học
+
+Phần đầu tiên là **Azure Blob Storage**. Chúng ta sẽ tạo một storage account, xem cách tạo container và blob, và cách chúng được tổ chức bên trong storage account. Chúng ta sẽ quản lý blob và container trực tiếp từ Azure Portal, học cách hạn chế hoặc cấp quyền truy cập. Sau khi thành thạo Blob Storage trên Portal, chúng ta sẽ thực hiện các thao tác CRUD trên blob và container từ ứng dụng .NET. Ngoài ra, chúng ta sẽ học cách thiết lập metadata cho blob và cách bảo mật bằng SAS Token ở cấp độ blob, container và storage account.
+
+Phần tiếp theo là **Azure Function**. Chúng ta sẽ hiểu các nguyên tắc cơ bản và lợi ích, tạo Azure Function trong Visual Studio, khám phá các trigger và binding. Chúng ta sẽ tìm hiểu nhiều loại trigger như HTTP trigger, Blob trigger và Timer trigger, đồng thời sử dụng Dependency Injection trong Azure Function để inject DbContext và truy cập cơ sở dữ liệu SQL. Cuối phần này, chúng ta sẽ triển khai Azure Function lên Azure.
+
+Phần **Azure Logic Apps** sẽ giúp bạn hiểu các nguyên tắc cơ bản và lợi ích của Logic Apps. Chúng ta sẽ cấu hình Logic App, tạo nhiều Logic App, thêm các action và trigger trên Azure Portal, bao gồm HTTP trigger, Queue trigger, Blob trigger, Timer trigger và nhiều hơn nữa. Chúng ta cũng sẽ khám phá các tính năng đặc biệt như điều kiện If-Else, Switch Case và các built-in connector.
+
+Phần cuối về **Azure Cache for Redis** sẽ giúp bạn hiểu khái niệm caching, lợi ích của nó và lý do nên dùng Azure Redis Cache. Chúng ta sẽ triển khai Azure Cache trong dự án .NET Core và xem caching hoạt động thực tế, bao gồm cả cách vô hiệu hóa Redis Cache theo thời gian.
+
+## Yêu cầu tiên quyết
+
+Bạn cần có hiểu biết cơ bản về ứng dụng ASP.NET Core vì chúng ta sẽ xây dựng các ứng dụng CRUD nhỏ để thấy dịch vụ Azure hoạt động trong ứng dụng .NET. Bạn nên quen thuộc với cách hoạt động của ứng dụng MVC, bao gồm Models, Views, Controllers và cách thêm tính năng mới bằng Entity Framework Core. Bạn không cần có kinh nghiệm về Azure - chúng ta sẽ bắt đầu từ đầu với tất cả các dịch vụ.
+
+## Tạo tài khoản Azure
+
+Để làm việc với Azure, bạn cần tạo tài khoản trên Azure Portal tại `portal.azure.com`. Nhập địa chỉ email, mật khẩu và ngày sinh để hoàn tất đăng ký. Nếu bạn chưa bao giờ dùng Azure Portal, bạn có thể bắt đầu với bản dùng thử miễn phí Azure - bạn sẽ nhận được 200 đô la tín dụng miễn phí, mặc dù một số dịch vụ trong khóa học này yêu cầu thanh toán.
+
+Nếu bạn đã sử dụng bản dùng thử miễn phí, bạn có thể đăng ký theo mô hình Pay As You Go (trả theo mức dùng). Nhập thông tin cá nhân, xác minh tài khoản bằng số điện thoại và hoàn tất thông tin thanh toán. Sau khi đăng ký thành công, bạn sẽ có Azure subscription để sử dụng trong các video tiếp theo. Đừng lo lắng về chi phí - các dịch vụ chúng ta học trong khóa này không tốn kém, và nếu bạn theo dõi đúng theo khóa học, chi phí sẽ không vượt quá vài đô la.

@@ -1,0 +1,263 @@
+Trong phần này, chúng ta sẽ phát triển các Basket API Endpoints, expose Minimal API Endpoints sử dụng Carter Library và REPR Design Pattern. Đây là lớp cuối cùng của Vertical Slice Architecture — lớp trình bày (API/Presentation).
+
+## REPR Design Pattern và Carter Library
+
+**REPR (Request-Endpoint-Response)** là design pattern được Carter library áp dụng. Mỗi endpoint có:
+- **Request** — record type đại diện cho dữ liệu đầu vào
+- **Endpoint** — class xử lý request, gọi mediator, trả response
+- **Response** — record type đại diện cho dữ liệu đầu ra
+
+**Carter Library** đơn giản hóa việc định nghĩa Minimal API endpoints thông qua interface `ICarterModule`. Mỗi class implement `ICarterModule` đăng ký routes thông qua method `AddRoutes(IEndpointRouteBuilder app)`.
+
+## Cấu trúc Endpoints Basket Module
+
+| Endpoint | Method | URL |
+|----------|--------|-----|
+| CreateBasket | POST | /basket |
+| GetBasket | GET | /basket/{userName} |
+| DeleteBasket | DELETE | /basket/{userName} |
+| AddItemIntoBasket | POST | /basket/{userName}/items |
+| RemoveItemFromBasket | DELETE | /basket/{userName}/items |
+
+## CreateBasket Endpoint
+
+```csharp
+public record CreateBasketRequest(ShoppingCartDto ShoppingCart);
+public record CreateBasketResponse(Guid Id);
+
+public class CreateBasketEndpoint : ICarterModule
+{
+    public void AddRoutes(IEndpointRouteBuilder app)
+    {
+        app.MapPost("/basket", async (CreateBasketRequest request, ISender sender) =>
+        {
+            var command = request.Adapt<CreateBasketCommand>();
+            var result = await sender.Send(command);
+            var response = result.Adapt<CreateBasketResponse>();
+            return Results.Created($"/basket/{response.Id}", response);
+        })
+        .WithSummary("Create Basket")
+        .WithDescription("Create a new shopping cart")
+        .Produces<CreateBasketResponse>(StatusCodes.Status201Created)
+        .ProducesProblem(StatusCodes.Status400BadRequest);
+    }
+}
+```
+
+`request.Adapt<CreateBasketCommand>()` dùng Mapster để map request sang command. Sau khi mediator xử lý, kết quả được map ngược lại thành response và trả về `201 Created`.
+
+## DeleteBasket Endpoint
+
+```csharp
+public record DeleteBasketResponse(bool IsSuccess);
+
+public class DeleteBasketEndpoint : ICarterModule
+{
+    public void AddRoutes(IEndpointRouteBuilder app)
+    {
+        app.MapDelete("/basket/{userName}", async (string userName, ISender sender) =>
+        {
+            var result = await sender.Send(new DeleteBasketCommand(userName));
+            var response = result.Adapt<DeleteBasketResponse>();
+            return Results.Ok(response);
+        })
+        .WithSummary("Delete Basket")
+        .Produces<DeleteBasketResponse>(StatusCodes.Status200OK)
+        .ProducesProblem(StatusCodes.Status404NotFound);
+    }
+}
+```
+
+Username được lấy trực tiếp từ route parameter, truyền vào command, không cần request body.
+
+## GetBasket Endpoint
+
+```csharp
+public record GetBasketResponse(ShoppingCartDto ShoppingCart);
+
+public class GetBasketEndpoint : ICarterModule
+{
+    public void AddRoutes(IEndpointRouteBuilder app)
+    {
+        app.MapGet("/basket/{userName}", async (string userName, ISender sender) =>
+        {
+            var result = await sender.Send(new GetBasketQuery(userName));
+            var response = result.Adapt<GetBasketResponse>();
+            return Results.Ok(response);
+        })
+        .WithSummary("Get Basket by UserName")
+        .Produces<GetBasketResponse>(StatusCodes.Status200OK)
+        .ProducesProblem(StatusCodes.Status404NotFound);
+    }
+}
+```
+
+## AddItemIntoBasket Endpoint
+
+```csharp
+public record AddItemIntoBasketRequest(string UserName, ShoppingCartItemDto ShoppingCartItem);
+public record AddItemIntoBasketResponse(Guid Id);
+
+public class AddItemIntoBasketEndpoint : ICarterModule
+{
+    public void AddRoutes(IEndpointRouteBuilder app)
+    {
+        app.MapPost("/basket/{userName}/items",
+            async ([FromRoute] string userName, [FromBody] AddItemIntoBasketRequest request, ISender sender) =>
+        {
+            var command = new AddItemIntoBasketCommand(userName, request.ShoppingCartItem);
+            var result = await sender.Send(command);
+            var response = result.Adapt<AddItemIntoBasketResponse>();
+            return Results.Ok(response);
+        })
+        .WithSummary("Add Item Into Basket")
+        .Produces<AddItemIntoBasketResponse>(StatusCodes.Status200OK)
+        .ProducesProblem(StatusCodes.Status400BadRequest);
+    }
+}
+```
+
+**Lưu ý quan trọng:** `[FromRoute]` lấy `userName` từ URL path, `[FromBody]` lấy request từ body. Endpoint này kết hợp cả hai nguồn dữ liệu.
+
+## RemoveItemFromBasket Endpoint
+
+```csharp
+public record RemoveItemFromBasketRequest(string UserName, Guid ProductId);
+public record RemoveItemFromBasketResponse(Guid Id);
+
+public class RemoveItemFromBasketEndpoint : ICarterModule
+{
+    public void AddRoutes(IEndpointRouteBuilder app)
+    {
+        app.MapDelete("/basket/{userName}/items",
+            async ([FromRoute] string userName, [FromBody] RemoveItemFromBasketRequest request, ISender sender) =>
+        {
+            var command = new RemoveItemFromBasketCommand(userName, request.ProductId);
+            var result = await sender.Send(command);
+            var response = result.Adapt<RemoveItemFromBasketResponse>();
+            return Results.Ok(response);
+        })
+        .WithSummary("Remove Item From Basket")
+        .Produces<RemoveItemFromBasketResponse>(StatusCodes.Status200OK)
+        .ProducesProblem(StatusCodes.Status404NotFound);
+    }
+}
+```
+
+## Đăng ký MediatR và Carter vào Dependency Injection
+
+### AddBasketModule — đăng ký services
+
+```csharp
+public static IServiceCollection AddBasketModule(this IServiceCollection services, IConfiguration configuration)
+{
+    // Application Use Case services
+    services.AddMediatR(cfg =>
+        cfg.RegisterServicesFromAssembly(Assembly.GetExecutingAssembly()));
+
+    // Data Infrastructure services
+    var connectionString = configuration.GetConnectionString("Database");
+    services.AddDbContext<BasketDbContext>(options =>
+        options.UseNpgsql(connectionString));
+
+    return services;
+}
+```
+
+### Extension Method cho MediatR Registration với nhiều Assemblies
+
+Vì mỗi module đều cần đăng ký MediatR với assembly riêng, chúng ta tạo extension method dùng chung trong Shared Library:
+
+```csharp
+// Shared/Extensions/MediatRExtensions.cs
+public static IServiceCollection AddMediatRWithAssemblies(
+    this IServiceCollection services, params Assembly[] assemblies)
+{
+    services.AddMediatR(cfg => cfg.RegisterServicesFromAssemblies(assemblies));
+    return services;
+}
+```
+
+### UseCatalogModule — đăng ký Carter routes
+
+```csharp
+public static IApplicationBuilder UseBasketModule(this IApplicationBuilder app)
+{
+    app.UseMigration<BasketDbContext>();
+    return app;
+}
+```
+
+Carter routes được đăng ký tập trung trong `Program.cs`:
+
+```csharp
+// Program.cs
+app.MapCarter(); // Tự động tìm và đăng ký tất cả ICarterModule implementations
+```
+
+Và trong services:
+```csharp
+builder.Services.AddCarter(new ActorDiscoveryConvention(), options =>
+    options.WithAssemblies(Assembly.GetExecutingAssembly()));
+```
+
+## Test với Postman
+
+### Test CreateBasket
+```http
+POST /basket
+Content-Type: application/json
+
+{
+  "shoppingCart": {
+    "userName": "myuser",
+    "items": []
+  }
+}
+```
+Response: `201 Created` với `{ "id": "..." }`
+
+### Test GetBasket
+```http
+GET /basket/myuser
+```
+Response: `200 OK` với shopping cart details
+
+### Test AddItemIntoBasket
+```http
+POST /basket/myuser/items
+Content-Type: application/json
+
+{
+  "shoppingCartItem": {
+    "productId": "...",
+    "quantity": 2,
+    "color": "Red",
+    "price": 950.00,
+    "productName": "iPhone X"
+  }
+}
+```
+
+### Test DeleteBasket
+```http
+DELETE /basket/myuser
+```
+Response: `200 OK` với `{ "isSuccess": true }`
+
+## Luồng hoàn chỉnh của một Request
+
+```
+HTTP Request (Postman/Client)
+    → Carter Endpoint (ICarterModule.AddRoutes)
+    → request.Adapt<Command>() [Mapster mapping]
+    → ISender.Send(command) [MediatR]
+    → Validation Pipeline (FluentValidation)
+    → Logging Pipeline (Serilog)
+    → CommandHandler.Handle() [Business Logic + EF Core]
+    → result.Adapt<Response>() [Mapster mapping]
+    → Results.Ok(response) / Results.Created(...)
+    → HTTP Response
+```
+
+Kiến trúc này đảm bảo mỗi layer chỉ có một trách nhiệm duy nhất, code dễ test và maintain.

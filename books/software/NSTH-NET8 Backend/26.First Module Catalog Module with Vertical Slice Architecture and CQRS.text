@@ -1,0 +1,198 @@
+Trong phần này, chúng ta bắt đầu xây dựng module đầu tiên trong kiến trúc Modular Monolith — **Catalog Module**. Module này sẽ được phát triển theo Vertical Slice Architecture và CQRS design pattern.
+
+## Tổng Quan Catalog Module
+
+Nhìn vào bức tranh tổng thể của dự án, chúng ta đang ở điểm bắt đầu xây dựng Catalog Module. Module này là nền tảng đầu tiên, áp dụng đầy đủ các patterns và principles mà chúng ta sẽ tiếp tục dùng cho Basket và Ordering modules.
+
+Catalog Module bao gồm:
+- **Vertical Slice Architecture** với feature folders
+- **Domain Driven Design** — product entities, domain events
+- **CQRS** với MediatR
+- **Entity Framework Core** kết nối PostgreSQL
+- **Minimal APIs** với Carter
+
+## Phân Tích Domain
+
+### Domain Models
+
+Domain model chính của Catalog Module là **Product**, liên kết với **Category**. Product có các attributes:
+
+| Property | Kiểu | Mô tả |
+|----------|------|--------|
+| Id | Guid | Unique identifier |
+| Name | string | Tên sản phẩm |
+| Category | List\<string\> | Danh mục |
+| Description | string | Mô tả |
+| ImageFile | string | Đường dẫn hình ảnh |
+| Price | decimal | Giá |
+
+**Domain Events:**
+- `ProductCreatedEvent` — khi tạo sản phẩm mới
+- `ProductPriceChangedEvent` — khi cập nhật giá (sẽ dẫn tới integration event để update giỏ hàng)
+
+### Application Use Cases
+
+| Use Case | Loại | Mô tả |
+|----------|------|--------|
+| GetProducts | Query | Lấy danh sách tất cả sản phẩm |
+| GetProductById | Query | Lấy sản phẩm theo ID |
+| GetProductsByCategory | Query | Lấy sản phẩm theo danh mục |
+| CreateProduct | Command | Tạo sản phẩm mới |
+| UpdateProduct | Command | Cập nhật sản phẩm (raise domain event nếu giá thay đổi) |
+| DeleteProduct | Command | Xóa sản phẩm |
+
+### REST API Endpoints
+
+| Method | URL | Use Case |
+|--------|-----|----------|
+| GET | /products | GetProducts |
+| GET | /products/{id} | GetProductById |
+| GET | /products/category/{category} | GetProductsByCategory |
+| POST | /products | CreateProduct |
+| PUT | /products/{id} | UpdateProduct |
+| DELETE | /products/{id} | DeleteProduct |
+
+### Underlying Data Structure
+
+- PostgreSQL database, schema `catalog` (data isolation)
+- Entity Framework Core code-first approach
+- Migrations và entity configurations
+
+## Phân Tích Kỹ Thuật
+
+### Application Architecture Style
+
+**Vertical Slice Architecture** — tổ chức code theo feature folders. Mỗi feature folder (ví dụ `CreateProduct`) chứa tất cả code liên quan trong một file C# duy nhất: command/query, validator, handler, và endpoint.
+
+### Patterns và Principles
+
+- **CQRS:** Phân tách commands (write) và queries (read)
+- **Mediator Pattern:** MediatR làm trung gian giảm direct dependencies
+- **Dependency Injection:** ASP.Net Core built-in DI
+- **Repository Pattern (EF Core):** ORM abstraction cho database
+- **Minimal APIs:** Carter library cho endpoint definitions
+
+### Libraries và NuGet Packages
+
+| Library | Mục đích |
+|---------|----------|
+| MediatR | CQRS implementation |
+| Carter | Minimal API endpoints |
+| Entity Framework Core + Npgsql | PostgreSQL interaction |
+| Mapster | Object mapping |
+| FluentValidation | Input validation |
+
+### Project Folder Structure
+
+```
+Catalog/                        # Catalog class library
+├── GlobalUsings.cs
+├── CatalogModule.cs            # DI registration + HTTP pipeline
+├── Products/                   # Feature folder
+│   ├── Models/
+│   │   └── Product.cs          # Domain entity
+│   ├── Events/
+│   │   ├── ProductCreatedEvent.cs
+│   │   └── ProductPriceChangedEvent.cs
+│   ├── Dtos/
+│   │   └── ProductDto.cs
+│   └── Features/
+│       ├── CreateProduct/
+│       │   └── CreateProductHandler.cs  # Command + Validator + Handler + Endpoint
+│       ├── UpdateProduct/
+│       │   └── UpdateProductHandler.cs
+│       ├── DeleteProduct/
+│       │   └── DeleteProductHandler.cs
+│       ├── GetProducts/
+│       │   └── GetProductsHandler.cs
+│       ├── GetProductById/
+│       │   └── GetProductByIdHandler.cs
+│       └── GetProductsByCategory/
+│           └── GetProductsByCategoryHandler.cs
+└── Data/
+    ├── CatalogDbContext.cs
+    ├── Configurations/
+    │   └── ProductConfiguration.cs
+    └── Migrations/
+        └── ...
+```
+
+## Cách Tiếp Cận Phát Triển (Way of Development)
+
+Dự án được tổ chức thành ba thư mục chính: **Shared**, **Modules**, và **API**.
+
+### Quy Trình Phát Triển
+
+**Bước 1 — Shared Library:**
+Bắt đầu bằng việc xây dựng Shared class library với các common classes, abstractions, và utilities dùng chung cho tất cả modules:
+- DDD abstractions (Entity, Aggregate, IDomainEvent)
+- CQRS abstractions (ICommand, IQuery, ICommandHandler, IQueryHandler)
+- Exception base classes (NotFoundException, ValidationException)
+- Extension methods (MediatR, Carter, Migration)
+- Pipeline behaviors (ValidationBehavior, LoggingBehavior)
+
+**Bước 2 — Từng Module:**
+Mỗi module được phát triển theo sub-path: **Domain → Infrastructure → Application → Presentation**
+
+```
+Domain:
+    - Entities, Value Objects
+    - Domain Events
+    - Business rules
+
+Infrastructure:
+    - DbContext
+    - Entity configurations
+    - Migrations
+    - EF Core Interceptors
+
+Application:
+    - Commands và Queries
+    - Validators
+    - Handlers (business logic)
+    - Domain Event Handlers
+
+Presentation:
+    - Carter Endpoints (ICarterModule)
+    - Request/Response record types
+```
+
+**Bước 3 — API Project:**
+Tích hợp tất cả modules vào API project, wire-up dependencies trong `Program.cs`.
+
+### Tại Sao Vertical Slice Architecture?
+
+Traditional layer architecture (Controller → Service → Repository) tạo ra nhiều files phải sửa khi thêm một feature. Vertical Slice Architecture nhóm tất cả code của một feature vào một chỗ — dễ tìm, dễ sửa, dễ xóa.
+
+```
+Traditional:
+Controllers/ProductsController.cs    ← sửa
+Services/ProductService.cs           ← sửa
+Repositories/ProductRepository.cs   ← sửa
+Models/Product.cs                    ← sửa
+
+Vertical Slice:
+Products/Features/CreateProduct/CreateProductHandler.cs   ← sửa 1 file
+```
+
+## Kiến Trúc Nội Bộ Catalog Module
+
+```
+HTTP Request
+    → Carter Endpoint (Minimal API)
+    → request.Adapt<Command>() [Mapster]
+    → ISender.Send(command) [MediatR]
+    → ValidationBehavior [FluentValidation]
+    → LoggingBehavior [Serilog]
+    → CommandHandler [EF Core + Domain Logic]
+    → result.Adapt<Response>() [Mapster]
+    → HTTP Response
+```
+
+Mỗi layer chỉ có một trách nhiệm duy nhất:
+- **Endpoint:** Nhận HTTP request, map sang command, gọi mediator
+- **Behavior:** Cross-cutting concerns (validation, logging)
+- **Handler:** Business logic thuần túy với DbContext
+- **Domain Entity:** Encapsulate business rules và domain events
+
+Catalog Module là template cho tất cả modules còn lại — một khi hiểu rõ Catalog Module, bạn có thể áp dụng cùng pattern cho Basket và Ordering modules.

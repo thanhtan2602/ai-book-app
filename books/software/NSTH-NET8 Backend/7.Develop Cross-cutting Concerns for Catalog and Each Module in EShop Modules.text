@@ -1,0 +1,427 @@
+## Phát triển Cross-cutting Concerns cho Catalog và Các Module trong EShop
+
+Cross-cutting concerns là những khía cạnh của ứng dụng ảnh hưởng đến nhiều tầng khác nhau, ví dụ: logging, validation, exception handling, performance tracking. Trong kiến trúc Modular Monolith, cách tiếp cận hiệu quả nhất là tập trung những mối quan tâm chung này vào thư viện Shared, sau đó áp dụng cho từng module.
+
+Trong chương này, chúng ta sẽ triển khai:
+
+- MediatR Pipeline Behaviors
+- FluentValidation — Validation Behavior
+- Global Exception Handling với `IExceptionHandler`
+- Logging Behavior với Serilog và SEQ
+- Pagination cho GetProducts query
+
+---
+
+## MediatR Pipeline Behaviors
+
+MediatR Pipeline Behaviors hoạt động như middleware trong luồng xử lý request. Chúng bọc xung quanh handler, cho phép thực thi code trước và sau khi handler chạy — không cần sửa handler.
+
+Mỗi Pipeline Behavior implement `IPipelineBehavior<TRequest, TResponse>` và cung cấp phương thức `Handle` để thực thi logic:
+
+```csharp
+public class TracingBehavior<TRequest, TResponse>
+    : IPipelineBehavior<TRequest, TResponse>
+    where TRequest : IRequest<TResponse>
+{
+    public async Task<TResponse> Handle(
+        TRequest request,
+        RequestHandlerDelegate<TResponse> next,
+        CancellationToken cancellationToken)
+    {
+        // Preprocessor logic
+        var response = await next(); // Gọi handler thực tế
+        // Postprocessor logic
+        return response;
+    }
+}
+```
+
+Các behavior được chạy theo thứ tự: Behavior 1 → Behavior 2 → Handler → Behavior 2 (return) → Behavior 1 (return).
+
+---
+
+## FluentValidation
+
+FluentValidation là thư viện .NET để xây dựng validation rules theo kiểu strongly-typed. Cú pháp rõ ràng, dễ đọc và dễ bảo trì. Tích hợp với MediatR Pipeline Behavior giúp tự động validate request trước khi đến handler.
+
+### Cài đặt
+
+Cài vào thư viện Shared (ba package):
+
+```
+FluentValidation
+FluentValidation.AspNetCore
+FluentValidation.DependencyInjectionExtensions
+```
+
+### Định nghĩa Validator
+
+Mỗi command có một validator class riêng, đặt cùng file với handler:
+
+```csharp
+public class CreateProductCommandValidator : AbstractValidator<CreateProductCommand>
+{
+    public CreateProductCommandValidator()
+    {
+        RuleFor(x => x.Product.Name)
+            .NotEmpty().WithMessage("Name is required");
+
+        RuleFor(x => x.Product.Category)
+            .NotEmpty().WithMessage("Category is required");
+
+        RuleFor(x => x.Product.ImageFile)
+            .NotEmpty().WithMessage("Image file is required");
+
+        RuleFor(x => x.Product.Price)
+            .GreaterThan(0).WithMessage("Price must be greater than zero");
+    }
+}
+```
+
+Tương tự, định nghĩa validator cho UpdateProduct và DeleteProduct:
+
+```csharp
+public class UpdateProductCommandValidator : AbstractValidator<UpdateProductCommand>
+{
+    public UpdateProductCommandValidator()
+    {
+        RuleFor(x => x.Product.Id).NotEmpty().WithMessage("ID is required");
+        RuleFor(x => x.Product.Name).NotEmpty().WithMessage("Name is required");
+        RuleFor(x => x.Product.Price).GreaterThan(0);
+    }
+}
+
+public class DeleteProductCommandValidator : AbstractValidator<DeleteProductCommand>
+{
+    public DeleteProductCommandValidator()
+    {
+        RuleFor(x => x.ProductId).NotEmpty().WithMessage("Product ID is required");
+    }
+}
+```
+
+---
+
+## Validation Pipeline Behavior
+
+Thay vì inject `IValidator` thủ công vào từng handler (không hiệu quả, lặp code), chúng ta tạo một `ValidationBehavior` tập trung:
+
+```csharp
+public class ValidationBehavior<TRequest, TResponse>
+    : IPipelineBehavior<TRequest, TResponse>
+    where TRequest : ICommand<TResponse>
+{
+    private readonly IEnumerable<IValidator<TRequest>> _validators;
+
+    public ValidationBehavior(IEnumerable<IValidator<TRequest>> validators)
+    {
+        _validators = validators;
+    }
+
+    public async Task<TResponse> Handle(
+        TRequest request,
+        RequestHandlerDelegate<TResponse> next,
+        CancellationToken cancellationToken)
+    {
+        var context = new ValidationContext<TRequest>(request);
+
+        var validationResults = await Task.WhenAll(
+            _validators.Select(v => v.ValidateAsync(context, cancellationToken))
+        );
+
+        var failures = validationResults
+            .Where(r => r.Errors.Any())
+            .SelectMany(r => r.Errors)
+            .ToList();
+
+        if (failures.Any())
+            throw new ValidationException(failures);
+
+        return await next();
+    }
+}
+```
+
+Lưu ý constraint `where TRequest : ICommand<TResponse>` — Validation Behavior chỉ áp dụng cho Commands, không áp dụng cho Queries.
+
+### Đăng ký trong Module
+
+```csharp
+// CatalogModule.cs
+services.AddMediatR(config =>
+{
+    config.RegisterServicesFromAssembly(Assembly.GetExecutingAssembly());
+    config.AddOpenBehavior(typeof(ValidationBehavior<,>));
+    config.AddOpenBehavior(typeof(LoggingBehavior<,>));
+});
+
+services.AddValidatorsFromAssembly(Assembly.GetExecutingAssembly());
+```
+
+Sau khi đăng ký, không cần thêm validation code vào handler nữa — MediatR tự động chạy `ValidationBehavior` trước mọi command handler.
+
+---
+
+## Global Exception Handling
+
+Khi validation thất bại hoặc có lỗi xảy ra, response mặc định khó đọc. Chúng ta cần format lỗi thành JSON có cấu trúc.
+
+### Exception Classes trong Shared Library
+
+Tạo các exception chung trong thư mục `Shared/Exceptions`:
+
+```csharp
+public class NotFoundException : Exception
+{
+    public NotFoundException(string message) : base(message) { }
+
+    public NotFoundException(string name, object key)
+        : base($"Entity \"{name}\" ({key}) was not found.") { }
+}
+
+public class InternalServerException : Exception
+{
+    public string? Details { get; }
+
+    public InternalServerException(string message) : base(message) { }
+
+    public InternalServerException(string message, string details)
+        : base(message)
+    {
+        Details = details;
+    }
+}
+
+public class BadRequestException : Exception
+{
+    public string? Details { get; }
+
+    public BadRequestException(string message) : base(message) { }
+
+    public BadRequestException(string message, string details)
+        : base(message)
+    {
+        Details = details;
+    }
+}
+```
+
+### Custom Exception cho Module
+
+Catalog module tạo exception chuyên biệt kế thừa từ `NotFoundException`:
+
+```csharp
+// Catalog/Products/Exceptions/ProductNotFoundException.cs
+public class ProductNotFoundException : NotFoundException
+{
+    public ProductNotFoundException(Guid id)
+        : base("Product", id) { }
+}
+```
+
+### Global Exception Handler trong Program.cs
+
+```csharp
+app.UseExceptionHandler(exceptionHandlerApp =>
+{
+    exceptionHandlerApp.Run(async context =>
+    {
+        var exception = context.Features.Get<IExceptionHandlerFeature>()?.Error;
+        if (exception is null) return;
+
+        var problemDetails = new ProblemDetails
+        {
+            Title = exception.Message,
+            Status = exception switch
+            {
+                NotFoundException => StatusCodes.Status404NotFound,
+                ValidationException => StatusCodes.Status400BadRequest,
+                BadRequestException => StatusCodes.Status400BadRequest,
+                _ => StatusCodes.Status500InternalServerError
+            },
+            Detail = exception.StackTrace
+        };
+
+        context.Response.StatusCode = problemDetails.Status.Value;
+        context.Response.ContentType = "application/json";
+        await context.Response.WriteAsJsonAsync(problemDetails);
+    });
+});
+```
+
+Kết quả: thay vì raw exception text, client nhận JSON có cấu trúc:
+
+```json
+{
+  "title": "Validation failed for Name is required",
+  "status": 400,
+  "detail": "..."
+}
+```
+
+---
+
+## Logging Behavior
+
+Tương tự Validation Behavior, Logging Behavior tự động ghi log thông tin request/response mà không cần sửa từng handler:
+
+```csharp
+public class LoggingBehavior<TRequest, TResponse>
+    : IPipelineBehavior<TRequest, TResponse>
+    where TRequest : notnull, IRequest<TResponse>
+    where TResponse : notnull
+{
+    private readonly ILogger<LoggingBehavior<TRequest, TResponse>> _logger;
+
+    public LoggingBehavior(ILogger<LoggingBehavior<TRequest, TResponse>> logger)
+    {
+        _logger = logger;
+    }
+
+    public async Task<TResponse> Handle(
+        TRequest request,
+        RequestHandlerDelegate<TResponse> next,
+        CancellationToken cancellationToken)
+    {
+        _logger.LogInformation(
+            "[START] Handle request={Request} - Response={Response} - RequestData={RequestData}",
+            typeof(TRequest).Name, typeof(TResponse).Name, request);
+
+        var timer = new Stopwatch();
+        timer.Start();
+
+        var response = await next();
+
+        timer.Stop();
+        if (timer.Elapsed.Seconds > 3)
+        {
+            _logger.LogWarning(
+                "[PERFORMANCE] Handle {Request} took {Elapsed} seconds",
+                typeof(TRequest).Name, timer.Elapsed.Seconds);
+        }
+
+        _logger.LogInformation("[END] Handled {Request} with {Response}",
+            typeof(TRequest).Name, typeof(TResponse).Name);
+
+        return response;
+    }
+}
+```
+
+Behavior này cũng theo dõi hiệu năng — nếu request mất hơn 3 giây sẽ ghi log cảnh báo.
+
+---
+
+## Serilog và SEQ
+
+Serilog là thư viện structured logging phổ biến cho .NET. SEQ là server thu thập và hiển thị structured logs từ Serilog.
+
+### Cài đặt Serilog
+
+```csharp
+// Program.cs
+builder.Host.UseSerilog((context, config) =>
+{
+    config.ReadFrom.Configuration(context.Configuration);
+});
+```
+
+### appsettings.json
+
+```json
+{
+  "Serilog": {
+    "Using": ["Serilog.Sinks.Console", "Serilog.Sinks.Seq"],
+    "MinimumLevel": {
+      "Default": "Information",
+      "Override": {
+        "Microsoft": "Warning",
+        "System": "Warning"
+      }
+    },
+    "WriteTo": [
+      { "Name": "Console" },
+      {
+        "Name": "Seq",
+        "Args": { "serverUrl": "http://localhost:5341" }
+      }
+    ],
+    "Enrich": ["FromLogContext", "WithMachineName", "WithThreadId"]
+  }
+}
+```
+
+SEQ chạy trên Docker Compose, cho phép tìm kiếm và lọc structured logs theo property (ví dụ: tìm tất cả log của một request cụ thể theo `RequestId`).
+
+---
+
+## Pagination cho GetProducts
+
+Khi số lượng sản phẩm lớn, cần phân trang. Cập nhật `GetProductsQuery` để hỗ trợ `PaginationRequest`:
+
+```csharp
+public record PaginationRequest(int PageIndex = 0, int PageSize = 10);
+
+public record GetProductsQuery(PaginationRequest Pagination)
+    : IQuery<GetProductsResult>;
+
+public record GetProductsResult(
+    IEnumerable<ProductDto> Products,
+    long TotalCount,
+    int PageIndex,
+    int PageSize
+);
+```
+
+### Handler với Pagination
+
+```csharp
+public async Task<GetProductsResult> Handle(
+    GetProductsQuery query, CancellationToken cancellationToken)
+{
+    var pageIndex = query.Pagination.PageIndex;
+    var pageSize = query.Pagination.PageSize;
+
+    var totalCount = await dbContext.Products.LongCountAsync(cancellationToken);
+
+    var products = await dbContext.Products
+        .AsNoTracking()
+        .OrderBy(p => p.Name)
+        .Skip(pageIndex * pageSize)
+        .Take(pageSize)
+        .ToListAsync(cancellationToken);
+
+    var productDtos = products.Adapt<List<ProductDto>>();
+
+    return new GetProductsResult(productDtos, totalCount, pageIndex, pageSize);
+}
+```
+
+Endpoint cập nhật để nhận query string parameters:
+
+```csharp
+app.MapGet("/products", async (
+    [AsParameters] PaginationRequest pagination, ISender sender) =>
+{
+    var result = await sender.Send(new GetProductsQuery(pagination));
+    var response = result.Adapt<GetProductsResponse>();
+    return Results.Ok(response);
+});
+```
+
+---
+
+## Tổng kết
+
+Trong chương này, chúng ta đã:
+
+- Hiểu cơ chế MediatR Pipeline Behaviors hoạt động như middleware
+- Tạo `ValidationBehavior` tự động validate tất cả Commands trước khi chạy handler — loại bỏ validation code lặp lại
+- Định nghĩa `AbstractValidator` cho từng command (Create, Update, Delete)
+- Xây dựng Global Exception Handler trả về JSON có cấu trúc thay vì raw exception
+- Tạo hierarchy exception classes trong Shared (`NotFoundException`, `BadRequestException`, `InternalServerException`) và module-specific exceptions (`ProductNotFoundException`)
+- Triển khai `LoggingBehavior` để tự động ghi log request/response và theo dõi hiệu năng
+- Tích hợp Serilog + SEQ cho structured logging
+- Thêm Pagination vào `GetProductsQuery`
+
+Toàn bộ cross-cutting concerns được đặt trong thư viện Shared, đảm bảo nhất quán và tái sử dụng cho mọi module trong ứng dụng Modular Monolith.

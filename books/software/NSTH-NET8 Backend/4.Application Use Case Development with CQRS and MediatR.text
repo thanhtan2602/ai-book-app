@@ -1,0 +1,187 @@
+Trong phần này, chúng ta sẽ tìm hiểu về phát triển application use cases sử dụng **CQRS** (Command Query Responsibility Segregation) và thư viện **MediatR**. Phần này tập trung vào việc xây dựng abstractions trong Shared Library để sử dụng cho tất cả các modules.
+
+Nội dung chính:
+- CQRS Design Pattern
+- Logical vs Physical implementation của CQRS
+- CQRS với MediatR library
+- Phát triển Feature Handler classes với CQRS và MediatR
+- Tạo CQRS Abstractions trong Shared Library
+
+## CQRS Design Pattern
+
+**CQRS** (Command Query Responsibility Segregation) là một trong những pattern quan trọng khi làm việc với microservices và complex applications. Pattern này **tách biệt các thao tác đọc và ghi** với hai mục tiêu riêng biệt:
+
+- **Commands** — thay đổi trạng thái dữ liệu trong ứng dụng (Create, Update, Delete)
+- **Queries** — xử lý các thao tác đọc phức tạp và trả về kết quả mà không thay đổi trạng thái dữ liệu
+
+### Vấn đề với kiến trúc đơn database
+
+Trong các ứng dụng monolithic quy mô lớn với một database duy nhất, database đó phải phục vụ cả query phức tạp (nhiều JOINs) lẫn Crud operations cùng lúc. Khi ứng dụng phát triển:
+- **Đọc:** Các queries cần JOIN nhiều tables → lock database do latency
+- **Ghi:** Cần validation phức tạp, business logic dài → cũng lock database
+
+CQRS giải quyết điều này bằng cách áp dụng **Separation of Concerns** — cho phép tối ưu hóa riêng biệt cho đọc và ghi.
+
+## Hai cách triển khai CQRS
+
+### 1. Logical Implementation *(được dùng trong khóa học này)*
+
+Tách biệt operations **ở tầng code**, không phải ở database. Cả read và write đều tương tác với cùng một database, nhưng qua các paths khác nhau:
+- **Read operations:** sử dụng DTOs tối ưu cho hiệu suất
+- **Write operations:** tương tác với domain model phức tạp để đảm bảo business rules
+
+Đây là bước đầu tiên khi áp dụng CQRS — đơn giản hơn nhưng vẫn mang lại lợi ích về separation of concerns và code maintainability.
+
+### 2. Physical Implementation
+
+Tách biệt database hoàn toàn — một database riêng cho đọc (thường là NoSQL với dữ liệu denormalized) và một database riêng cho ghi (thường là relational database với dữ liệu normalized). Cách này mang lại hiệu suất tốt hơn nhưng tăng độ phức tạp trong việc đồng bộ hóa dữ liệu giữa hai databases.
+
+## CQRS với MediatR Library
+
+**MediatR** là thư viện .NET phổ biến triển khai Mediator Pattern — rất phù hợp cho CQRS. Nó cho phép gửi commands và queries đến các handlers tương ứng mà không cần coupling sender với receiver.
+
+### Request Lifecycle trong CQRS + MediatR
+
+```
+Client Request
+    → Carter Endpoint (Minimal API)
+    → mediator.Send(new CreateProductCommand(...))
+    → MediatR dispatch đến CreateProductCommandHandler
+    → Handler thực thi business logic + tương tác database
+    → Trả về CreateProductResult
+    → Endpoint chuyển đổi thành HTTP Response
+```
+
+### MediatR Pipeline Behaviors
+
+MediatR cung cấp **Pipeline Behaviors** để implement cross-cutting concerns. Chúng wrap xung quanh request handling, cho phép thực thi logic trước và sau khi handler thực sự được gọi:
+
+- **Logging Behavior** — log chi tiết về việc xử lý request
+- **Validation Behavior** — validate incoming requests trước khi đến handler
+
+## Phát triển Feature Handler Class
+
+Trong thư mục `Products/Features/CreateProduct`, tạo class `CreateProductHandler.cs`:
+
+```csharp
+// Command và Result records — định nghĩa input/output
+public record CreateProductCommand(string Name, string Category, string Description, string ImageFile, decimal Price)
+    : ICommand<CreateProductResult>;
+
+public record CreateProductResult(Guid Id);
+
+// Command Handler — xử lý business logic
+public class CreateProductCommandHandler : ICommandHandler<CreateProductCommand, CreateProductResult>
+{
+    public async Task<CreateProductResult> Handle(CreateProductCommand command, CancellationToken cancellationToken)
+    {
+        // Business logic: tạo product và lưu vào database
+        var product = Product.Create(Guid.NewGuid(), command.Name, command.Category,
+                                     command.Description, command.ImageFile, command.Price);
+        // ...
+        return new CreateProductResult(product.Id);
+    }
+}
+```
+
+**Lưu ý:** MediatR chỉ có `IRequest` và `IRequestHandler` — nó không phân biệt Command và Query. Chúng ta cần tạo abstractions riêng.
+
+## CQRS Abstractions trong Shared Library
+
+Để phân tách rõ ràng Commands và Queries, chúng ta tạo các custom interfaces trong `Shared/CQRS/`:
+
+### ICommand interfaces
+
+```csharp
+// ICommand với response
+public interface ICommand<TResponse> : IRequest<TResponse> { }
+
+// ICommand không có response (void)
+public interface ICommand : ICommand<Unit> { }
+// Unit = void type trong MediatR
+```
+
+### IQuery interface
+
+```csharp
+// IQuery luôn có response (không thể void) — đây là đặc tính của queries
+public interface IQuery<TResponse> : IRequest<TResponse>
+    where TResponse : notnull { }
+```
+
+### ICommandHandler interfaces
+
+```csharp
+// Handler có response
+public interface ICommandHandler<TCommand, TResponse> : IRequestHandler<TCommand, TResponse>
+    where TCommand : ICommand<TResponse>
+    where TResponse : notnull { }
+
+// Handler không có response
+public interface ICommandHandler<TCommand> : ICommandHandler<TCommand, Unit>
+    where TCommand : ICommand<Unit> { }
+```
+
+### IQueryHandler interface
+
+```csharp
+public interface IQueryHandler<TQuery, TResponse> : IRequestHandler<TQuery, TResponse>
+    where TQuery : IQuery<TResponse>
+    where TResponse : notnull { }
+```
+
+### Lợi ích của CQRS Abstractions
+
+1. **Phân tách rõ ràng:** `ICommand` chỉ dùng cho write operations, `IQuery` chỉ dùng cho read operations
+2. **Type safety:** Compiler đảm bảo handler đúng loại được dùng cho command/query tương ứng
+3. **Cross-cutting concerns linh hoạt:** Có thể áp dụng validation chỉ cho Commands, logging khác nhau cho Queries
+4. **Code rõ ràng hơn:** Đọc code biết ngay đây là command hay query operation
+
+### Cập nhật CreateProductCommandHandler
+
+Sau khi có abstractions:
+
+```csharp
+public record CreateProductCommand(string Name, string Category, string Description,
+                                   string ImageFile, decimal Price)
+    : ICommand<CreateProductResult>; // Sử dụng ICommand thay vì IRequest
+
+public class CreateProductCommandHandler
+    : ICommandHandler<CreateProductCommand, CreateProductResult> // Sử dụng ICommandHandler
+{
+    public async Task<CreateProductResult> Handle(CreateProductCommand command, CancellationToken cancellationToken)
+    {
+        // Business logic
+        return new CreateProductResult(Guid.NewGuid());
+    }
+}
+```
+
+## Cấu trúc Vertical Slice Architecture trong Catalog Module
+
+```
+Catalog/
+├── Products/
+│   └── Features/
+│       ├── CreateProduct/
+│       │   └── CreateProductHandler.cs (Command + Result + Handler)
+│       ├── UpdateProduct/
+│       │   └── UpdateProductHandler.cs
+│       ├── DeleteProduct/
+│       │   └── DeleteProductHandler.cs
+│       ├── GetProducts/
+│       │   └── GetProductsHandler.cs (Query + Result + Handler)
+│       ├── GetProductById/
+│       │   └── GetProductByIdHandler.cs
+│       └── GetProductsByCategory/
+│           └── GetProductsByCategoryHandler.cs
+
+Shared/
+└── CQRS/
+    ├── ICommand.cs    (ICommand<TResponse>, ICommand)
+    ├── IQuery.cs      (IQuery<TResponse>)
+    ├── ICommandHandler.cs
+    └── IQueryHandler.cs
+```
+
+Mỗi Feature Folder là một "vertical slice" — tự chứa đầy đủ logic cho một use case, bao gồm command/query definition, handler và endpoint. Đây là cách Vertical Slice Architecture hoạt động trong thực tế.

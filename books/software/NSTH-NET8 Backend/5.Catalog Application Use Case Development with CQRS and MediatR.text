@@ -1,0 +1,308 @@
+## Phát triển Catalog Application Use Cases với CQRS và MediatR
+
+Trong chương này, chúng ta sẽ phát triển các use case của Catalog module theo đúng kiến trúc CQRS và thư viện MediatR. Sau khi hoàn thiện phần Abstractions trong thư viện Shared, đây là lúc tập trung vào việc triển khai các tính năng thực tế cho Catalog module theo kiến trúc Vertical Slice Architecture.
+
+### Tổng quan về những gì sẽ phát triển
+
+Trong chương này, chúng ta sẽ:
+
+- Phát triển DTOs cho sản phẩm (Product DTOs)
+- Xây dựng `CreateProductCommand` và Handler tương ứng
+- Xây dựng `UpdateProductCommand` và Handler
+- Xây dựng `DeleteProductCommand` và Handler
+- Xây dựng các Query: `GetProducts`, `GetProductById`, `GetProductsByCategory`
+- Tích hợp ánh xạ đối tượng với thư viện Mapster
+- Xử lý Domain Event Handlers với MediatR
+
+### Nhìn lại kiến trúc: Commands và Queries
+
+Theo mô hình CQRS, chúng ta phân tách rõ ràng hai nhóm hoạt động:
+
+- **Commands**: Thay đổi trạng thái của hệ thống, đóng gói dữ liệu cần thiết cho một hành động cụ thể. Mỗi command đều có một handler tương ứng — handler này tương tác với domain model và lưu trữ thay đổi.
+- **Queries**: Đọc dữ liệu từ hệ thống mà không thay đổi trạng thái.
+
+Trong phần trước, chúng ta đã xây dựng các abstraction cho CQRS trong thư viện Shared. Bây giờ chúng ta sẽ sử dụng các abstraction đó (`ICommand`, `ICommandHandler`, `IQuery`, `IQueryHandler`) khi phát triển các use case cụ thể.
+
+---
+
+## DTOs cho Product
+
+Trước khi triển khai các feature, nên tạo folder `Dtos` và định nghĩa các lớp DTO để truyền dữ liệu giữa endpoint và handler khi làm việc với CQRS.
+
+Dưới folder `Products` (cùng cấp với `Events` và `Features`), tạo folder `Dtos` và thêm class `ProductDto`:
+
+```csharp
+public record ProductDto(
+    Guid Id,
+    string Name,
+    List<string> Category,
+    string Description,
+    string ImageFile,
+    decimal Price
+);
+```
+
+`ProductDto` là record type đại diện cho toàn bộ thông tin sản phẩm, giúp ánh xạ dữ liệu giữa các tầng khi triển khai use case.
+
+---
+
+## CreateProduct — Command và Handler
+
+### Command và Result
+
+```csharp
+public record CreateProductCommand(ProductDto Product) : ICommand<CreateProductResult>;
+
+public record CreateProductResult(Guid Id);
+```
+
+`CreateProductCommand` nhận vào một `ProductDto` và implement `ICommand<CreateProductResult>` — đây là abstraction CQRS đã định nghĩa trong thư viện Shared, kế thừa từ `IRequest` của MediatR.
+
+### Handler
+
+```csharp
+internal class CreateProductHandler(CatalogDbContext dbContext)
+    : ICommandHandler<CreateProductCommand, CreateProductResult>
+{
+    public async Task<CreateProductResult> Handle(
+        CreateProductCommand command, CancellationToken cancellationToken)
+    {
+        var product = CreateNewProduct(command.Product);
+        dbContext.Products.Add(product);
+        await dbContext.SaveChangesAsync(cancellationToken);
+        return new CreateProductResult(product.Id);
+    }
+
+    private static Product CreateNewProduct(ProductDto productDto) =>
+        Product.Create(
+            Guid.NewGuid(),
+            productDto.Name,
+            productDto.Category,
+            productDto.Description,
+            productDto.ImageFile,
+            productDto.Price
+        );
+}
+```
+
+Handler này nhận command từ MediatR, tạo entity `Product` từ DTO, thêm vào `DbSet` và lưu vào database bằng `SaveChangesAsync`. Hàm `CreateNewProduct` là helper method tận dụng phương thức factory `Product.Create()` theo mô hình rich domain model — entity tự chịu trách nhiệm khởi tạo chính mình.
+
+---
+
+## UpdateProduct — Command và Handler
+
+```csharp
+public record UpdateProductCommand(ProductDto Product) : ICommand<UpdateProductResult>;
+
+public record UpdateProductResult(bool IsSuccess);
+```
+
+```csharp
+internal class UpdateProductHandler(CatalogDbContext dbContext)
+    : ICommandHandler<UpdateProductCommand, UpdateProductResult>
+{
+    public async Task<UpdateProductResult> Handle(
+        UpdateProductCommand command, CancellationToken cancellationToken)
+    {
+        var product = await dbContext.Products.FindAsync(command.Product.Id, cancellationToken);
+        if (product is null)
+            throw new ProductNotFoundException(command.Product.Id);
+
+        UpdateProductWithNewValues(product, command.Product);
+        dbContext.Products.Update(product);
+        await dbContext.SaveChangesAsync(cancellationToken);
+        return new UpdateProductResult(true);
+    }
+
+    private static void UpdateProductWithNewValues(Product product, ProductDto dto)
+    {
+        product.Update(dto.Name, dto.Category, dto.Description, dto.ImageFile, dto.Price);
+    }
+}
+```
+
+**Lý do dùng `FindAsync`**: Khi update, chúng ta cần tracking entity để EF Core biết cần lưu thay đổi. `FindAsync` tối ưu cho việc tìm entity theo primary key và hỗ trợ change tracking. Ngoài ra, phương thức `product.Update()` trong entity cũng kiểm tra validation, null-check, và nếu giá thay đổi sẽ tự động raise `ProductPriceChangedDomainEvent`.
+
+---
+
+## DeleteProduct — Command và Handler
+
+```csharp
+public record DeleteProductCommand(Guid ProductId) : ICommand<DeleteProductResult>;
+
+public record DeleteProductResult(bool IsSuccess);
+```
+
+```csharp
+internal class DeleteProductHandler(CatalogDbContext dbContext)
+    : ICommandHandler<DeleteProductCommand, DeleteProductResult>
+{
+    public async Task<DeleteProductResult> Handle(
+        DeleteProductCommand command, CancellationToken cancellationToken)
+    {
+        var product = await dbContext.Products.FindAsync(command.ProductId, cancellationToken);
+        if (product is null)
+            throw new ProductNotFoundException(command.ProductId);
+
+        dbContext.Products.Remove(product);
+        await dbContext.SaveChangesAsync(cancellationToken);
+        return new DeleteProductResult(true);
+    }
+}
+```
+
+Tương tự UpdateProduct, handler này dùng `FindAsync` để tìm entity theo primary key, sau đó xóa khỏi DbContext và lưu thay đổi.
+
+---
+
+## GetProducts — Query và Handler
+
+### Query và Result
+
+```csharp
+public record GetProductsQuery() : IQuery<GetProductsResult>;
+
+public record GetProductsResult(IEnumerable<ProductDto> Products);
+```
+
+### Handler
+
+```csharp
+internal class GetProductsHandler(CatalogDbContext dbContext)
+    : IQueryHandler<GetProductsQuery, GetProductsResult>
+{
+    public async Task<GetProductsResult> Handle(
+        GetProductsQuery query, CancellationToken cancellationToken)
+    {
+        var products = await dbContext.Products
+            .AsNoTracking()
+            .OrderBy(p => p.Name)
+            .ToListAsync(cancellationToken);
+
+        var productDtos = products.Adapt<List<ProductDto>>();
+        return new GetProductsResult(productDtos);
+    }
+}
+```
+
+Handler dùng `AsNoTracking()` vì đây là thao tác đọc, không cần change tracking — giúp tăng hiệu năng. Việc ánh xạ từ entity sang DTO được thực hiện bằng Mapster (`Adapt<>()`).
+
+---
+
+## GetProductByCategory — Query và Handler
+
+```csharp
+public record GetProductByCategoryQuery(string Category) : IQuery<GetProductByCategoryResult>;
+
+public record GetProductByCategoryResult(IEnumerable<ProductDto> Products);
+```
+
+```csharp
+internal class GetProductByCategoryHandler(CatalogDbContext dbContext)
+    : IQueryHandler<GetProductByCategoryQuery, GetProductByCategoryResult>
+{
+    public async Task<GetProductByCategoryResult> Handle(
+        GetProductByCategoryQuery query, CancellationToken cancellationToken)
+    {
+        var products = await dbContext.Products
+            .AsNoTracking()
+            .Where(p => p.Category.Contains(query.Category))
+            .OrderBy(p => p.Name)
+            .ToListAsync(cancellationToken);
+
+        var productDtos = products.Adapt<List<ProductDto>>();
+        return new GetProductByCategoryResult(productDtos);
+    }
+}
+```
+
+---
+
+## GetProductById — Query và Handler
+
+```csharp
+public record GetProductByIdQuery(Guid Id) : IQuery<GetProductByIdResult>;
+
+public record GetProductByIdResult(ProductDto Product);
+```
+
+```csharp
+internal class GetProductByIdHandler(CatalogDbContext dbContext)
+    : IQueryHandler<GetProductByIdQuery, GetProductByIdResult>
+{
+    public async Task<GetProductByIdResult> Handle(
+        GetProductByIdQuery query, CancellationToken cancellationToken)
+    {
+        var product = await dbContext.Products
+            .AsNoTracking()
+            .SingleOrDefaultAsync(p => p.Id == query.Id, cancellationToken);
+
+        if (product is null)
+            throw new ProductNotFoundException(query.Id);
+
+        var productDto = product.Adapt<ProductDto>();
+        return new GetProductByIdResult(productDto);
+    }
+}
+```
+
+**Tại sao dùng `SingleOrDefaultAsync` thay vì `FindAsync`?**
+
+- `FindAsync` phù hợp khi cần tracking (ví dụ: khi update), tìm theo primary key và hiệu năng cao nhất.
+- `SingleOrDefaultAsync` phù hợp khi chỉ cần đọc dữ liệu, kết hợp với `AsNoTracking()` để giảm overhead. Ngoài ra, `SingleOrDefaultAsync` đảm bảo chỉ có duy nhất một kết quả — nếu có nhiều hơn một sẽ throw exception.
+
+---
+
+## Ánh xạ đối tượng với Mapster
+
+Mapster là thư viện ánh xạ object linh hoạt và dễ dùng cho .NET. Thay vì tự viết từng mapping bằng vòng lặp, chỉ cần một dòng:
+
+```csharp
+var productDtos = products.Adapt<List<ProductDto>>();
+```
+
+hoặc
+
+```csharp
+var productDto = product.Adapt<ProductDto>();
+```
+
+Mapster được cài đặt vào thư viện Shared (dùng chung cho mọi module), và đăng ký vào DI container qua `AddMapster()`. Sau đó, tất cả module chỉ cần reference Shared là có thể sử dụng.
+
+---
+
+## Domain Event Handlers
+
+Khi `product.Update()` thay đổi giá, entity sẽ raise `ProductPriceChangedDomainEvent`. MediatR xử lý domain event này thông qua `INotificationHandler`:
+
+```csharp
+public class ProductPriceChangedDomainEventHandler
+    : INotificationHandler<ProductPriceChangedDomainEvent>
+{
+    public Task Handle(
+        ProductPriceChangedDomainEvent notification, CancellationToken cancellationToken)
+    {
+        // Xử lý logic khi giá sản phẩm thay đổi
+        // Ví dụ: thông báo cho các module liên quan (Basket) cập nhật giá
+        return Task.CompletedTask;
+    }
+}
+```
+
+Domain event handler được kích hoạt sau khi EF Core lưu thay đổi thông qua Domain Events Interceptor đã cài đặt trong thư viện Shared.
+
+---
+
+## Tổng kết
+
+Trong chương này, chúng ta đã:
+
+- Xây dựng đầy đủ folder structure cho các use case theo Vertical Slice Architecture
+- Định nghĩa DTOs để truyền dữ liệu giữa các tầng
+- Triển khai các Command Handlers cho `CreateProduct`, `UpdateProduct`, `DeleteProduct` sử dụng `CatalogDbContext`
+- Triển khai các Query Handlers cho `GetProducts`, `GetProductById`, `GetProductsByCategory`
+- Tích hợp Mapster để ánh xạ entity sang DTO chỉ bằng một dòng code
+- Hiểu rõ khi nào dùng `FindAsync` (khi update/delete) và khi nào dùng `SingleOrDefaultAsync` (khi read-only)
+- Xử lý domain events thông qua MediatR `INotificationHandler`
+
+Kiến trúc này đảm bảo mỗi use case tự đóng gói hoàn chỉnh (Vertical Slice), handlers chỉ tập trung vào logic nghiệp vụ cốt lõi, và các cross-cutting concerns được xử lý tách biệt qua MediatR pipeline behaviors.

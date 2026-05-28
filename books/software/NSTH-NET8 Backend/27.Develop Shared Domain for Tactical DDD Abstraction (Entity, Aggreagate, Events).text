@@ -1,0 +1,347 @@
+Trong phần này, chúng ta sẽ phát triển Shared Domain Layer — các abstractions nền tảng cho Tactical Domain Driven Design. Đây là các class và interface dùng chung cho tất cả modules: Entity, Aggregate, và Domain Events.
+
+## Domain Driven Design — Tổng Quan
+
+**Domain Driven Design (DDD)** là phương pháp thiết kế phần mềm tập trung vào domain (lĩnh vực nghiệp vụ) và logic domain, được Eric Evans giới thiệu năm 2003. DDD giải quyết vấn đề phức tạp bằng cách chia nhỏ thành các phần nhỏ hơn, dễ quản lý hơn.
+
+DDD có hai loại:
+
+| Loại | Phạm vi | Mục tiêu |
+|------|---------|-----------|
+| **Strategic DDD** | Hiểu và mô hình hóa business domain | Bounded contexts, ubiquitous language, context mapping |
+| **Tactical DDD** | Chi tiết implementation | Entities, Value Objects, Aggregates, Domain Events |
+
+### Các Khái Niệm Cơ Bản của Strategic DDD
+
+- **Domain:** Lĩnh vực kiến thức mà ứng dụng giải quyết (ví dụ: e-commerce bao gồm ordering, inventory, customer support)
+- **Subdomain:** Một phần của domain với logic và quy tắc riêng
+- **Ubiquitous Language:** Ngôn ngữ chung giữa developers và domain experts — dùng nhất quán trong code và trong thảo luận
+- **Bounded Context:** Ranh giới logic quanh một nhóm các domain concepts liên quan — mỗi module trong Modular Monolith là một bounded context
+- **Context Mapping:** Phương pháp xác định và vẽ bản đồ tất cả bounded contexts
+
+## Tactical DDD Patterns
+
+### 1. Entity
+
+Entity là object được nhận dạng bởi **identity** (định danh), không phải bởi attributes. Dù các attributes giống nhau, nếu ID khác nhau thì đây là hai entities khác nhau.
+
+```csharp
+// Ví dụ: Order là entity — được nhận dạng bởi OrderId
+// Dù hai orders có cùng items, chúng là KHÁC NHAU nếu OrderId khác nhau
+```
+
+### 2. Value Object
+
+Value Object là object mô tả thuộc tính nhưng **không có identity**. Chúng là **immutable** — không thể thay đổi sau khi tạo.
+
+```csharp
+// Address là value object — không có ID riêng
+// Hai addresses với cùng street và city thì BẰNG NHAU
+public record Address(string Street, string City, string Country);
+```
+
+### 3. Aggregate
+
+Aggregate là **cụm domain objects** (entities + value objects) được xử lý như một đơn vị. Aggregate duy trì tính nhất quán cho tất cả objects bên trong ranh giới của nó.
+
+### 4. Aggregate Root
+
+Aggregate Root là entity chính trong aggregate. Tất cả tương tác từ bên ngoài phải đi qua Aggregate Root.
+
+## Implement DDD Abstractions trong Shared Library
+
+### IEntity Interface
+
+```csharp
+// Shared/DDD/IEntity.cs
+public interface IEntity
+{
+    public DateTime? CreatedAt { get; set; }
+    public string? CreatedBy { get; set; }
+    public DateTime? LastModified { get; set; }
+    public string? LastModifiedBy { get; set; }
+}
+
+public interface IEntity<T> : IEntity
+{
+    public T Id { get; set; }
+}
+```
+
+`IEntity` chứa các tracking properties chung cho tất cả entities — theo dõi khi nào và ai đã tạo/sửa.
+
+### Entity Abstract Class
+
+```csharp
+// Shared/DDD/Entity.cs
+public abstract class Entity<T> : IEntity<T>
+{
+    public T Id { get; set; } = default!;
+
+    public DateTime? CreatedAt { get; set; }
+    public string? CreatedBy { get; set; }
+    public DateTime? LastModified { get; set; }
+    public string? LastModifiedBy { get; set; }
+}
+```
+
+`Entity<T>` là base class cho tất cả entities. Generic parameter `T` là kiểu của ID — thường là `Guid`.
+
+### IDomainEvent Interface
+
+Domain events đại diện cho những điều quan trọng đã xảy ra trong domain — chúng ta muốn theo dõi hoặc phản ứng với chúng.
+
+```csharp
+// Shared/DDD/IDomainEvent.cs
+public interface IDomainEvent : INotification
+{
+    Guid EventId => Guid.NewGuid();
+    DateTime OccurredOn => DateTime.Now;
+    string EventType => GetType().AssemblyQualifiedName!;
+}
+```
+
+`IDomainEvent` implement `INotification` từ MediatR — cho phép dispatch domain events qua MediatR notification system.
+
+Ba properties:
+- `EventId` — unique identifier cho mỗi event instance
+- `OccurredOn` — timestamp khi event xảy ra
+- `EventType` — fully qualified type name để deserialize
+
+**Cài đặt MediatR vào Shared Library:**
+
+```xml
+<!-- Shared/Shared.csproj -->
+<PackageReference Include="MediatR" Version="12.*" />
+```
+
+Vì MediatR được dùng trong tất cả modules, cài vào Shared library một lần là đủ.
+
+### IAggregate Interface
+
+```csharp
+// Shared/DDD/IAggregate.cs
+public interface IAggregate : IEntity
+{
+    IReadOnlyList<IDomainEvent> DomainEvents { get; }
+    IDomainEvent[] ClearDomainEvents();
+}
+
+public interface IAggregate<T> : IAggregate, IEntity<T>
+{
+    // Generic version — combines IAggregate + IEntity<T>
+}
+```
+
+`IAggregate` extends `IEntity` với:
+- `DomainEvents` — readonly collection của domain events đang chờ dispatch
+- `ClearDomainEvents()` — trả về và xóa tất cả domain events (gọi sau khi dispatch)
+
+### Aggregate Abstract Class
+
+```csharp
+// Shared/DDD/Aggregate.cs
+public abstract class Aggregate<TId> : Entity<TId>, IAggregate<TId>
+{
+    private readonly List<IDomainEvent> _domainEvents = new();
+
+    public IReadOnlyList<IDomainEvent> DomainEvents => _domainEvents.AsReadOnly();
+
+    public void AddDomainEvent(IDomainEvent domainEvent)
+    {
+        _domainEvents.Add(domainEvent);
+    }
+
+    public IDomainEvent[] ClearDomainEvents()
+    {
+        var events = _domainEvents.ToArray();
+        _domainEvents.Clear();
+        return events;
+    }
+}
+```
+
+`Aggregate<TId>` extends `Entity<TId>` và implements `IAggregate<TId>`:
+
+- `_domainEvents` — private list lưu trữ các domain events
+- `DomainEvents` — public readonly access
+- `AddDomainEvent()` — thêm event vào list (gọi từ trong aggregate methods)
+- `ClearDomainEvents()` — lấy tất cả events và xóa list (gọi bởi EF Core interceptor sau khi dispatch)
+
+## Cách Sử Dụng trong Modules
+
+### Định nghĩa Entity
+
+```csharp
+// Basket/Models/ShoppingCart.cs
+public class ShoppingCart : Aggregate<Guid>  // ← kế thừa từ Aggregate
+{
+    public string UserName { get; private set; } = default!;
+    private readonly List<ShoppingCartItem> _items = new();
+    public IReadOnlyList<ShoppingCartItem> Items => _items.AsReadOnly();
+
+    // Factory method
+    public static ShoppingCart Create(Guid id, string userName)
+    {
+        var cart = new ShoppingCart
+        {
+            Id = id,
+            UserName = userName
+        };
+        // Raise domain event nếu cần
+        // cart.AddDomainEvent(new ShoppingCartCreatedEvent(cart));
+        return cart;
+    }
+
+    // Rich domain methods
+    public void AddItem(Guid productId, int quantity, string color,
+        decimal price, string productName)
+    {
+        var existingItem = _items.FirstOrDefault(x => x.ProductId == productId);
+        if (existingItem != null)
+            existingItem.IncreaseQuantity(quantity);
+        else
+            _items.Add(new ShoppingCartItem(Id, productId, quantity, color, price, productName));
+    }
+
+    public void RemoveItem(Guid productId)
+    {
+        var item = _items.FirstOrDefault(x => x.ProductId == productId)
+            ?? throw new DomainException($"Item not found: {productId}");
+        _items.Remove(item);
+    }
+}
+```
+
+### Định nghĩa Domain Event
+
+```csharp
+// Catalog/Products/Events/ProductCreatedEvent.cs
+public record ProductCreatedEvent(Product Product) : IDomainEvent;
+
+// Catalog/Products/Events/ProductPriceChangedEvent.cs
+public record ProductPriceChangedEvent(Product Product) : IDomainEvent;
+```
+
+Domain events là `record` types — immutable và so sánh theo giá trị.
+
+### Raise Domain Event từ Entity
+
+```csharp
+// Trong Aggregate methods:
+public static Product Create(Guid id, string name, ...)
+{
+    var product = new Product { Id = id, Name = name, ... };
+    product.AddDomainEvent(new ProductCreatedEvent(product));  // ← Raise event
+    return product;
+}
+
+public void Update(string name, decimal price, ...)
+{
+    if (Price != price)
+    {
+        Price = price;
+        AddDomainEvent(new ProductPriceChangedEvent(this));  // ← Raise event nếu giá thay đổi
+    }
+    Name = name;
+    // ...
+}
+```
+
+### Dispatch Domain Events — EF Core Interceptor
+
+Domain events được dispatch sau khi `SaveChangesAsync()` thành công:
+
+```csharp
+// Shared/Data/Interceptors/DispatchDomainEventsInterceptor.cs
+public class DispatchDomainEventsInterceptor(IMediator mediator)
+    : SaveChangesInterceptor
+{
+    public override async ValueTask<int> SavedChangesAsync(
+        SaveChangesCompletedEventData eventData,
+        int result, CancellationToken cancellationToken = default)
+    {
+        await DispatchDomainEvents(eventData.Context!);
+        return await base.SavedChangesAsync(eventData, result, cancellationToken);
+    }
+
+    private async Task DispatchDomainEvents(DbContext context)
+    {
+        var aggregates = context.ChangeTracker
+            .Entries<IAggregate>()
+            .Where(a => a.Entity.DomainEvents.Any())
+            .Select(a => a.Entity)
+            .ToList();
+
+        var domainEvents = aggregates.SelectMany(a => a.DomainEvents).ToList();
+
+        aggregates.ForEach(a => a.ClearDomainEvents());
+
+        foreach (var domainEvent in domainEvents)
+            await mediator.Publish(domainEvent);
+    }
+}
+```
+
+### Handle Domain Event
+
+```csharp
+// Catalog/Products/EventHandlers/ProductCreatedEventHandler.cs
+public class ProductCreatedEventHandler
+    : INotificationHandler<ProductCreatedEvent>
+{
+    public Task Handle(ProductCreatedEvent notification, CancellationToken cancellationToken)
+    {
+        // Log, trigger additional logic, hoặc publish integration event
+        return Task.CompletedTask;
+    }
+}
+```
+
+## Domain Events vs Integration Events
+
+| Khía cạnh | Domain Event | Integration Event |
+|-----------|--------------|-------------------|
+| Phạm vi | Trong cùng module/domain | Giữa các modules/services |
+| Transport | In-memory (MediatR) | Message broker (RabbitMQ) |
+| Đồng bộ | Synchronous | Asynchronous |
+| Ví dụ | `ProductCreatedEvent` | `ProductPriceChangedIntegrationEvent` |
+
+Quy trình điển hình:
+1. Domain event được raise trong aggregate
+2. Domain event handler xử lý event
+3. Handler publish integration event lên RabbitMQ
+4. Module khác consume integration event từ RabbitMQ
+
+## Cấu Trúc Shared Library Hoàn Chỉnh
+
+```
+Shared/
+├── DDD/
+│   ├── IEntity.cs              # Interface cho tracking properties
+│   ├── Entity.cs               # Abstract base class cho entities
+│   ├── IDomainEvent.cs         # Interface (implements INotification)
+│   ├── IAggregate.cs           # Interface cho aggregates
+│   └── Aggregate.cs            # Abstract base class cho aggregates
+├── CQRS/
+│   ├── ICommand.cs             # IRequest<T> wrapper
+│   ├── IQuery.cs               # IRequest<T> wrapper
+│   ├── ICommandHandler.cs      # IRequestHandler<TCommand, TResult>
+│   └── IQueryHandler.cs        # IRequestHandler<TQuery, TResult>
+├── Exceptions/
+│   ├── NotFoundException.cs
+│   └── BadRequestException.cs
+├── Behaviors/
+│   ├── ValidationBehavior.cs
+│   └── LoggingBehavior.cs
+├── Data/
+│   └── Interceptors/
+│       ├── AuditableEntityInterceptor.cs
+│       └── DispatchDomainEventsInterceptor.cs
+└── Extensions/
+    ├── MediatRExtensions.cs
+    ├── CarterExtensions.cs
+    └── MigrationExtensions.cs
+```
+
+Các abstractions trong Shared library là nền tảng cho toàn bộ ứng dụng — mỗi module đều kế thừa và sử dụng chúng để implement domain models và use cases một cách nhất quán.

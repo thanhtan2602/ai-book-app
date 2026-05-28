@@ -1,0 +1,118 @@
+## Migrate sang Microservices – EShop Modules to Microservices với Strangler Fig Pattern
+
+Trong phần này, chúng ta sẽ tìm hiểu cách migrate từ ứng dụng modular monolith sang kiến trúc microservices bằng **Strangler Fig Pattern**. Chúng ta sẽ khám phá những thách thức, các cân nhắc quan trọng và 8 bước cụ thể để thực hiện quá trình chuyển đổi này một cách thành công.
+
+## Những Thách Thức Khi Migrate Sang Microservices
+
+Việc tách monolithic application thành các service nhỏ không phải là đơn giản. Có năm thách thức chính cần nhận thức rõ:
+
+**1. Độ phức tạp tăng cao.** Splitting một ứng dụng monolithic thành các service nhỏ hơn làm tăng đáng kể độ phức tạp về architecture, deployment và quản lý hệ thống.
+
+**2. Quản lý dữ liệu.** Đảm bảo data consistency giữa các service là mối lo ngại lớn, đặc biệt khi xử lý distributed transactions.
+
+**3. Inter-service communication.** Thiết kế giao tiếp hiệu quả giữa các service là yếu tố then chốt để duy trì hiệu năng và độ tin cậy.
+
+**4. Deployment và monitoring.** Quản lý nhiều service đòi hỏi chiến lược deployment mạnh mẽ và giải pháp monitoring toàn diện.
+
+**5. Phối hợp nhóm.** Migrate sang microservices thường kéo theo những thay đổi về cơ cấu nhóm và quy trình cộng tác.
+
+### Các Cân Nhắc Quan Trọng
+
+Trước khi bắt đầu migrate, cần xem xét:
+
+- **Ưu tiên nghiệp vụ:** Xác định phần nào quan trọng nhất cần migrate trước dựa trên tác động kinh doanh.
+- **Domain Driven Design:** Sử dụng DDD để xác định bounded contexts và định nghĩa service boundaries.
+- **Tiếp cận tăng dần:** Áp dụng incremental migration strategy để giảm thiểu rủi ro.
+- **Technology stack:** Đảm bảo tech stack hỗ trợ khả năng scalability, resilience và maintainability.
+
+## Strangler Fig Pattern
+
+### Khái niệm
+
+Strangler Fig Pattern là một cách tiếp cận chiến lược để refactor ứng dụng monolithic thành microservices. Pattern này nhấn mạnh việc **migrate từng bước**, đảm bảo hệ thống hiện tại ít bị gián đoạn nhất trong quá trình chuyển đổi dần sang microservices.
+
+Tên gọi xuất phát từ hình ảnh cây vả strangler – bắt đầu nhỏ, dần dần bao bọc và thay thế cây cũ (monolith) bằng cây mới (microservices).
+
+### Tại sao dùng Strangler Fig Pattern?
+
+- **Giảm thiểu gián đoạn:** Migrate từng phần giúp giảm nguy cơ downtime và gián đoạn người dùng.
+- **Duy trì ổn định:** Ứng dụng monolithic tiếp tục hoạt động trong khi từng module được tách ra thành microservice.
+- **Chuyển đổi linh hoạt:** Cách tiếp cận này cho phép điều chỉnh và cải tiến liên tục trong suốt quá trình.
+- **Giảm thiểu rủi ro:** Migrate dần dần cho phép kiểm thử và xác nhận từng microservice trước khi tiếp tục.
+
+## 8 Bước Migrate Từ Monolith Sang Microservices
+
+### Bước 1: Phân rã modules thành microservices với DDD Bounded Contexts
+
+Phân tích ứng dụng monolithic để xác định các bounded contexts. Với ứng dụng EShop, các modules như Catalog, Basket, Ordering và Identity đều là các bounded context tiềm năng. Định nghĩa rõ ranh giới cho từng microservice dựa trên business capability.
+
+### Bước 2: Ưu tiên modules để migrate
+
+Đánh giá độ phức tạp và dependencies của từng module. Ưu tiên migrate các module ít phức tạp và ít coupled trước để tích lũy kinh nghiệm. Trong ứng dụng EShop, **Identity module** là ứng viên đầu tiên vì có ranh giới rõ ràng và ít phụ thuộc vào các module khác.
+
+### Bước 3: Tách service ra khỏi monolith
+
+- **Isolate code và data:** Tách code và data của module được chọn, đảm bảo service được tách có thể hoạt động độc lập.
+- **Tạo APIs:** Phát triển APIs cho service mới để giao tiếp với các modules còn lại trong monolith, đảm bảo backward compatibility.
+
+Với Identity module: tách code và data thành microservice riêng, define APIs để giao tiếp với Catalog và Basket modules trong quá trình chuyển đổi.
+
+### Bước 4: Quản lý monolithic database
+
+- **Database decomposition:** Tách dần database monolithic thành các database nhỏ hơn theo service.
+- **Data synchronization:** Sử dụng Change Data Capture (CDC) hoặc Event Sourcing để đồng bộ dữ liệu giữa các service.
+
+Identity microservice cần database PostgreSQL riêng biệt và cơ chế đồng bộ dữ liệu với ứng dụng modular monolith.
+
+### Bước 5: Thiết kế inter-service communication
+
+**Synchronous communication (REST/gRPC):**
+
+Khi migrate Catalog và Basket thành microservices riêng biệt, giao tiếp in-process qua Mediator sẽ được thay thế bằng REST API calls. Basket microservice sẽ gọi REST API của Catalog microservice để lấy thông tin sản phẩm:
+
+```
+Basket Microservice → REST API → Catalog Microservice
+```
+
+API project cũng cần evolve thành API Gateway, xử lý client requests và redirect đến downstream microservices.
+
+**Asynchronous communication (Message Broker):**
+
+```
+Catalog Microservice → RabbitMQ → Basket Microservice (price update)
+Basket Microservice  → RabbitMQ → Ordering Microservice (checkout)
+```
+
+### Bước 6: Asynchronous communication giữa các services
+
+Áp dụng **Event-Driven Architecture**: các service publish và subscribe events, cho phép phản ứng với thay đổi một cách asynchronous. Chấp nhận **eventual consistency** cho việc đồng bộ dữ liệu giữa các service.
+
+### Bước 7: Distributed transactions và data consistency
+
+- **Saga Pattern:** Quản lý distributed transactions. Thiết kế compensating transactions để xử lý failures.
+- **Outbox Pattern:** Đảm bảo events chỉ được publish khi transaction commit thành công.
+
+Chúng ta đã triển khai Outbox Pattern trong ứng dụng – khi basket checkout, basket module lưu outbox record và xóa basket trong cùng một transaction, sau đó outbox processor publish event lên RabbitMQ.
+
+### Bước 8: Deployment microservices
+
+- **Containerization:** Containerize từng microservice bằng Docker để đảm bảo môi trường deployment nhất quán. Dùng Kubernetes để orchestration và scaling.
+- **CI/CD pipelines:** Tự động hóa quá trình build, test và deployment. Mỗi service có thể được deploy độc lập và rollback khi cần.
+- **Monitoring và logging:** Triển khai giải pháp monitoring toàn diện với các tools như Prometheus, Grafana, Elastic Stack, Jaeger.
+
+## Kiến Trúc Microservices Cuối Cùng
+
+Sau khi hoàn thành migration, kiến trúc EShop microservices bao gồm:
+
+- **Catalog Microservice** – quản lý sản phẩm, theo dõi giá
+- **Basket Microservice** – quản lý shopping cart, tích hợp Redis
+- **Discount Microservice** – quản lý giảm giá, gRPC communication
+- **Ordering Microservice** – xử lý đơn hàng, Clean Architecture
+- **API Gateway** – Yarp Reverse Proxy, xử lý client requests
+- **Shopping Web Client** – giao diện người dùng
+
+Mỗi microservice có database riêng (NoSQL hoặc relational), giao tiếp qua gRPC và RabbitMQ. Toàn bộ chạy trong Docker Compose (hoặc Kubernetes trong production).
+
+Bạn có thể tham khảo implementation chi tiết trong repository `run-aspnetcore-microservices` trên GitHub, nơi các pattern này được áp dụng đầy đủ cho từng microservice.
+
+Migrate từ monolithic sang microservices là quá trình phức tạp nhưng xứng đáng. Bằng cách áp dụng DDD, Strangler Fig Pattern và tiếp cận tăng dần, chúng ta có thể đảm bảo quá trình chuyển đổi diễn ra suôn sẻ và ổn định.

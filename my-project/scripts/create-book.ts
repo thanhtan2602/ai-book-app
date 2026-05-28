@@ -10,13 +10,16 @@ async function createPrisma() {
   return new PrismaClient({ adapter }) as any;
 }
 
-// --- SRT parser ---
+// --- SRT/WEBVTT parser ---
 function parseSrt(content: string): string {
   const blocks = content.trim().split(/\n\s*\n/);
   const textLines: string[] = [];
   for (const block of blocks) {
     const lines = block.trim().split("\n");
-    const text = lines.slice(2).join(" ").trim();
+    // Find the timestamp line (contains "-->") — works for both SRT and WEBVTT
+    const tsIdx = lines.findIndex((l) => l.includes("-->"));
+    if (tsIdx === -1) continue; // skip header blocks (e.g. "WEBVTT")
+    const text = lines.slice(tsIdx + 1).join(" ").trim();
     if (text) textLines.push(text);
   }
   return textLines.join(" ");

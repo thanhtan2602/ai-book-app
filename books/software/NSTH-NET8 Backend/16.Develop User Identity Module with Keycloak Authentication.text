@@ -1,0 +1,250 @@
+## Phát Triển User Identity Module với Keycloak Authentication
+
+Trong phần này, chúng ta sẽ xây dựng Identity Module sử dụng Keycloak — một giải pháp Identity and Access Management (IAM) mã nguồn mở mạnh mẽ. Keycloak sẽ đóng vai trò là backing service cho toàn bộ hệ thống xác thực và phân quyền của ứng dụng Modular Monolith.
+
+---
+
+## Keycloak Identity and Access Management
+
+**Keycloak** là giải pháp IAM mã nguồn mở dành cho các ứng dụng và service hiện đại. Nó cung cấp hỗ trợ toàn diện cho xác thực và phân quyền, bao gồm Single Sign-On (SSO), identity brokering và social login, giúp đơn giản hóa việc bảo mật ứng dụng với ít code nhất.
+
+**Các tính năng chính của Keycloak**:
+- **Single Sign-On (SSO)**: Người dùng đăng nhập một lần, truy cập nhiều ứng dụng.
+- **Identity Brokering & Social Login**: Tích hợp với Google, Facebook, GitHub và các identity provider khác.
+- **User Federation**: Kết nối với user database có sẵn (LDAP, Active Directory).
+- **Centralized Management**: Quản lý tất cả user identity và permission tại một nơi.
+- **Standard Protocols**: Hỗ trợ OAuth2, OpenID Connect và SAML 2.0.
+
+**Tại sao chọn Keycloak?**
+- **Security**: Các tính năng bảo mật mạnh mẽ, tuân thủ industry standards.
+- **Scalability**: Xử lý được hàng triệu user và request.
+- **Flexibility**: Dễ tích hợp với các ứng dụng và service khác nhau.
+- **User Experience**: SSO và social login cải thiện trải nghiệm người dùng.
+
+---
+
+## OAuth2 và OpenID Connect
+
+**OAuth2** là authorization framework cho phép ứng dụng có quyền truy cập hạn chế vào tài khoản người dùng trên HTTP service. Các khái niệm chính:
+- **Resource Owner**: Người dùng cho phép ứng dụng truy cập tài khoản.
+- **Client**: Ứng dụng yêu cầu quyền truy cập.
+- **Authorization Server**: Server xác thực user và cấp access token (Keycloak).
+- **Resource Server**: Server chứa tài nguyên được bảo vệ (API của chúng ta).
+
+**OpenID Connect** là identity layer xây dựng trên OAuth2, cho phép client xác minh danh tính user dựa trên xác thực từ authorization server. Các khái niệm chính:
+- **ID Token**: JSON Web Token chứa thông tin profile người dùng.
+- **UserInfo Endpoint**: Endpoint trả về thêm thông tin profile.
+
+**OAuth2 Flows**:
+- **Authorization Code Flow**: Phổ biến nhất cho web applications.
+- **Client Credentials Flow**: Cho machine-to-machine authentication (chúng ta sẽ dùng flow này).
+- **Implicit Flow**: Cho SPA, ít bảo mật hơn (không khuyến nghị).
+- **Resource Owner Password Credentials**: Chỉ dùng cho highly trusted clients.
+
+---
+
+## Setup Keycloak Trong Docker Compose
+
+Thêm Keycloak vào `docker-compose.yml`:
+
+```yaml
+identity:
+  image: quay.io/keycloak/keycloak:latest
+```
+
+Cấu hình trong `docker-compose.override.yml`:
+
+```yaml
+identity:
+  container_name: identity
+  environment:
+    - KEYCLOAK_ADMIN=admin
+    - KEYCLOAK_ADMIN_PASSWORD=admin
+    - KC_DB=postgres
+    - KC_DB_URL=jdbc:postgresql://db/db?currentSchema=identity
+    - KC_DB_USERNAME=postgres
+    - KC_DB_PASSWORD=postgres
+  restart: always
+  ports:
+    - "8080:8080"
+  command: start-dev
+```
+
+Keycloak được cấu hình để lưu dữ liệu vào **PostgreSQL database** trong schema `identity` — đảm bảo tính nhất quán với kiến trúc schema separation của Modular Monolith và dữ liệu không bị mất khi container restart.
+
+Tạo schema `identity` trong PostgreSQL trước khi chạy Docker Compose:
+
+```sql
+CREATE SCHEMA identity;
+GRANT ALL ON SCHEMA identity TO postgres;
+```
+
+---
+
+## Tạo Realm, User và Client Trong Keycloak
+
+Sau khi chạy Docker Compose, truy cập Keycloak Management Dashboard tại `http://localhost:8080` với credentials `admin/admin`.
+
+### Tạo Realm
+
+Realm trong Keycloak là không gian quản lý một tập user, credentials, roles và groups riêng biệt. Tạo realm mới tên `myrealm`.
+
+### Tạo User
+
+Trong realm `myrealm`, tạo user mới:
+- Username: `myuser`
+- Email: `myuser@myuser.com`
+- First Name: `MyUser`
+
+Sau khi tạo, vào tab **Credentials** → **Set Password** → đặt password `A1234`, tắt tùy chọn "Temporary".
+
+### Tạo Client
+
+Client trong Keycloak đại diện cho ứng dụng hoặc service. Tạo client mới:
+- Client Type: OpenID Connect
+- Client ID: `myclient`
+- **Client Authentication**: ON (để sử dụng client credentials flow)
+- **Service Account Roles**: ON (để enable client credentials flow)
+
+Khi bật Client Authentication, Keycloak tạo client secret trong tab **Credentials** — dùng để lấy access token.
+
+---
+
+## Bảo Mật API với JwtBearer
+
+Cài đặt package Keycloak authentication:
+
+```
+Keycloak.AuthServices.Authentication
+```
+
+Thêm cấu hình Keycloak vào `appsettings.json`:
+
+```json
+"Keycloak": {
+    "realm": "myrealm",
+    "auth-server-url": "http://localhost:8080",
+    "ssl-required": "none",
+    "resource": "myclient",
+    "verify-token-audience": false,
+    "credentials": {
+        "secret": ""
+    },
+    "confidential-port": 0
+}
+```
+
+Cấu hình authentication trong `Program.cs`:
+
+```csharp
+builder.Services.AddKeycloakWebApiAuthentication(builder.Configuration);
+
+builder.Services.AddAuthorization();
+
+// ...
+
+app.UseAuthentication();
+app.UseAuthorization();
+```
+
+Extension method `AddKeycloakWebApiAuthentication` tự động cấu hình JwtBearer middleware đọc config từ section "Keycloak" trong `appsettings.json`.
+
+---
+
+## Bảo Mật Basket Endpoints
+
+Sau khi cấu hình authentication, bảo vệ endpoint bằng `RequireAuthorization()`:
+
+```csharp
+// Basket Module - CheckoutBasketEndpoint.cs
+app.MapPost("/basket/checkout",
+    async (CheckoutBasketRequest request, ISender sender) =>
+    {
+        // ...
+    })
+    .RequireAuthorization()  // Yêu cầu authentication
+    .WithName("CheckoutBasket")
+    .Produces<CheckoutBasketResponse>()
+    .ProducesProblem(StatusCodes.Status400BadRequest);
+```
+
+---
+
+## Lấy Current User Từ Token qua ClaimsPrincipal
+
+JWT Bearer token chứa các claims về người dùng. Để lấy thông tin user hiện tại, inject `IHttpContextAccessor` và đọc từ `ClaimsPrincipal`:
+
+```csharp
+public class GetCurrentUserService(IHttpContextAccessor httpContextAccessor)
+{
+    public string? GetUsername()
+    {
+        return httpContextAccessor.HttpContext?.User
+            .FindFirst(ClaimTypes.Name)?.Value
+            ?? httpContextAccessor.HttpContext?.User
+            .FindFirst("preferred_username")?.Value;
+    }
+
+    public string? GetUserId()
+    {
+        return httpContextAccessor.HttpContext?.User
+            .FindFirst(ClaimTypes.NameIdentifier)?.Value;
+    }
+
+    public string? GetEmail()
+    {
+        return httpContextAccessor.HttpContext?.User
+            .FindFirst(ClaimTypes.Email)?.Value;
+    }
+}
+```
+
+Keycloak JWT token chứa claim `preferred_username` là username của người dùng trong realm.
+
+---
+
+## Lấy Token Bằng Postman
+
+Để lấy access token từ Keycloak (dùng Client Credentials flow):
+
+```http
+POST http://localhost:8080/realms/myrealm/protocol/openid-connect/token
+
+Content-Type: application/x-www-form-urlencoded
+
+grant_type=client_credentials
+&client_id=myclient
+&client_secret=<your-client-secret>
+```
+
+Sử dụng access token trong Authorization header khi gọi API:
+
+```http
+Authorization: Bearer <access_token>
+```
+
+---
+
+## Keycloak Như Cloud-Native Backing Service
+
+Keycloak chạy như một service riêng biệt trong Docker Compose environment, độc lập với application modules. Khi migrate sang microservices:
+
+- Keycloak trở thành **microservice đầu tiên** được tách ra
+- Các module giao tiếp với Keycloak qua REST API
+- Identity module có database riêng (PostgreSQL identity schema)
+
+Đây là bước đầu tiên tự nhiên trong quá trình chuyển đổi từ Modular Monolith sang Microservices.
+
+---
+
+## Tổng Kết
+
+Tích hợp Keycloak vào Modular Monolith cung cấp một hệ thống IAM đầy đủ tính năng:
+
+- **Realm** → không gian quản lý riêng cho application
+- **User** → tài khoản người dùng với credentials
+- **Client** → application/service đăng ký với Keycloak
+- **JWT Bearer Token** → cơ chế xác thực stateless
+- **ClaimsPrincipal** → truy cập thông tin user từ token trong ASP.NET Core
+
+Sử dụng PostgreSQL làm backend database cho Keycloak đảm bảo dữ liệu identity được lưu trữ bền vững và nhất quán với toàn bộ kiến trúc của hệ thống.

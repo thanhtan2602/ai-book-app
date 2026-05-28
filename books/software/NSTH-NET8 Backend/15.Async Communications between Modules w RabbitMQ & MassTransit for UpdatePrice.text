@@ -1,0 +1,294 @@
+## Giao Tiếp Bất Đồng Bộ Giữa Các Module với RabbitMQ & MassTransit cho UpdatePrice
+
+Trong phần này, chúng ta sẽ phát triển giao tiếp bất đồng bộ giữa Catalog Module và Basket Module sử dụng RabbitMQ và MassTransit. Use case cụ thể là khi giá sản phẩm được cập nhật trong Catalog Module, Basket Module cần cập nhật lại giá trong tất cả các shopping cart đang chứa sản phẩm đó.
+
+---
+
+## Tại Sao Cần Giao Tiếp Bất Đồng Bộ?
+
+Trong kiến trúc phân tán, giao tiếp bất đồng bộ mang lại nhiều lợi ích:
+
+- **Decoupling**: Sender và receiver hoạt động độc lập nhau.
+- **Scalability**: Không cần chờ response, hệ thống xử lý được nhiều request hơn.
+- **Resilience**: Nếu một module gặp sự cố, message có thể được retry hoặc xử lý sau.
+- **Responsiveness**: Người dùng nhận phản hồi ngay lập tức dù thao tác cần thời gian hoàn tất.
+
+Nếu không áp dụng giao tiếp bất đồng bộ, một chuỗi request đồng bộ (chain of requests) giữa nhiều module sẽ dẫn đến sự phụ thuộc chặt chẽ và khó mở rộng.
+
+---
+
+## Fan-Out Publish-Subscribe Pattern
+
+**Fan-out** là messaging pattern trong đó một message được phân phối đến nhiều đích nhận song song. Trong mô hình **Publish-Subscribe (Pub/Sub)**:
+
+- Một **publisher** gửi message đến một **topic**
+- Message được phân phối ngay lập tức đến tất cả **subscriber** của topic đó
+- Publisher không cần biết ai đang nhận message
+- Subscriber không cần biết message đến từ đâu
+
+Đây là kiến trúc hoàn toàn decoupled và bất đồng bộ, cho phép mỗi service scale độc lập.
+
+---
+
+## Domain Events vs Integration Events
+
+Hai loại event này khác nhau về mục đích và phạm vi:
+
+**Domain Events**:
+- Được publish và consume trong cùng một domain
+- Strict trong ranh giới của microservice hoặc domain context
+- Xảy ra in-process hoặc đồng bộ thông qua in-memory message bus
+- Ví dụ: `OrderPlacedEvent` trong Order domain
+
+**Integration Events**:
+- Được dùng để truyền tải trạng thái hoặc sự kiện giữa các bounded context khác nhau
+- Phải được gửi bất đồng bộ qua message broker qua queue
+- Được consume bởi các subsystem khác
+- Ví dụ: Sau khi xử lý `OrderPlacedEvent`, một `OrderPlacedIntegrationEvent` được publish lên RabbitMQ để các microservice khác xử lý
+
+---
+
+## ProductPriceChangedIntegrationEvent
+
+Khi giá sản phẩm thay đổi trong Catalog Module, luồng xử lý như sau:
+
+1. `Product` aggregate raise `ProductPriceChangedDomainEvent` (trong EF Core Interceptor)
+2. `ProductPriceChangedDomainEventHandler` handle domain event và publish integration event
+3. Integration event được gửi lên RabbitMQ
+4. Basket Module consume event và cập nhật giá trong shopping carts
+
+---
+
+## Shared.Messaging Class Library
+
+Để chia sẻ integration events và MassTransit configuration giữa các module, chúng ta tạo **Shared.Messaging** class library:
+
+```
+Shared.Messaging/
+  Events/
+    IntegrationEvent.cs         (base class)
+    ProductPriceChangedIntegrationEvent.cs
+    BasketCheckoutIntegrationEvent.cs
+  Extensions/
+    MassTransitExtensions.cs
+```
+
+**IntegrationEvent** base class:
+
+```csharp
+public record IntegrationEvent
+{
+    public Guid Id { get; } = Guid.NewGuid();
+    public DateTime OccurredOn { get; } = DateTime.UtcNow;
+    public string EventType => GetType().AssemblyQualifiedName!;
+}
+```
+
+**ProductPriceChangedIntegrationEvent**:
+
+```csharp
+public record ProductPriceChangedIntegrationEvent : IntegrationEvent
+{
+    public Guid ProductId { get; init; }
+    public string Name { get; init; } = default!;
+    public string Category { get; init; } = default!;
+    public string Description { get; init; } = default!;
+    public string ImageFile { get; init; } = default!;
+    public decimal Price { get; init; }
+}
+```
+
+Lưu ý: Tất cả property dùng primitive types để đảm bảo dễ serialize/deserialize giữa các module.
+
+---
+
+## MassTransit Extensions
+
+MassTransit là thư viện .NET mã nguồn mở cho message-based communication, hỗ trợ RabbitMQ, Kafka và nhiều protocol khác. Chúng ta tạo extension method để cấu hình MassTransit:
+
+```csharp
+public static class MassTransitExtensions
+{
+    public static IServiceCollection AddMassTransitWithAssemblies(
+        this IServiceCollection services,
+        IConfiguration configuration,
+        params Assembly[] assemblies)
+    {
+        services.AddMassTransit(config =>
+        {
+            config.SetKebabCaseEndpointNameFormatter();
+            config.SetInMemorySagaRepositoryProvider();
+
+            foreach (var assembly in assemblies)
+            {
+                config.AddConsumers(assembly);
+                config.AddSagaStateMachines(assembly);
+                config.AddSagas(assembly);
+                config.AddActivities(assembly);
+            }
+
+            config.UsingRabbitMq((context, configurator) =>
+            {
+                var host = configuration["MessageBroker:Host"];
+                var username = configuration["MessageBroker:UserName"];
+                var password = configuration["MessageBroker:Password"];
+
+                configurator.Host(new Uri(host!), h =>
+                {
+                    h.Username(username!);
+                    h.Password(password!);
+                });
+
+                configurator.ConfigureEndpoints(context);
+            });
+        });
+
+        return services;
+    }
+}
+```
+
+---
+
+## Setup RabbitMQ với Docker Compose
+
+Thêm RabbitMQ vào `docker-compose.yml`:
+
+```yaml
+messagebus:
+  image: rabbitmq:management
+```
+
+Cấu hình trong `docker-compose.override.yml`:
+
+```yaml
+messagebus:
+  container_name: messagebus
+  hostname: ecommerce-rabbitmq
+  environment:
+    - RABBITMQ_DEFAULT_USER=guest
+    - RABBITMQ_DEFAULT_PASS=guest
+  restart: always
+  ports:
+    - "5672:5672"    # AMQP protocol
+    - "15672:15672"  # Management UI
+```
+
+Cấu hình trong `appsettings.json`:
+
+```json
+"MessageBroker": {
+    "Host": "amqp://localhost:5672",
+    "UserName": "guest",
+    "Password": "guest"
+}
+```
+
+---
+
+## Catalog Module Publish Integration Event
+
+Trong `ProductPriceChangedDomainEventHandler`, sau khi xử lý domain event, publish integration event:
+
+```csharp
+public class ProductPriceChangedDomainEventHandler(IPublishEndpoint publishEndpoint)
+    : INotificationHandler<ProductPriceChangedDomainEvent>
+{
+    public async Task Handle(ProductPriceChangedDomainEvent notification,
+        CancellationToken cancellationToken)
+    {
+        var integrationEvent = notification.Product.Adapt<ProductPriceChangedIntegrationEvent>();
+        await publishEndpoint.Publish(integrationEvent, cancellationToken);
+    }
+}
+```
+
+`IPublishEndpoint` đến từ MassTransit và publish message lên RabbitMQ.
+
+---
+
+## Basket Subscribe và Consume Integration Events
+
+Trong Basket Module, tạo consumer để xử lý `ProductPriceChangedIntegrationEvent`:
+
+```csharp
+public class ProductPriceChangedIntegrationEventHandler(IBasketRepository repository)
+    : IConsumer<ProductPriceChangedIntegrationEvent>
+{
+    public async Task Consume(ConsumeContext<ProductPriceChangedIntegrationEvent> context)
+    {
+        var message = context.Message;
+        // Lấy tất cả basket có chứa sản phẩm thay đổi giá
+        // và cập nhật giá
+        await UpdateItemPriceInBasket(message, context.CancellationToken);
+    }
+
+    private async Task UpdateItemPriceInBasket(
+        ProductPriceChangedIntegrationEvent @event,
+        CancellationToken cancellationToken)
+    {
+        // Logic cập nhật giá trong shopping carts
+        // ...
+    }
+}
+```
+
+MassTransit tự động đăng ký consumer khi chúng ta pass assembly vào `AddMassTransitWithAssemblies`.
+
+---
+
+## Đăng Ký Trong Program.cs
+
+```csharp
+// Program.cs
+builder.Services.AddMassTransitWithAssemblies(
+    builder.Configuration,
+    typeof(CatalogModule).Assembly,
+    typeof(BasketModule).Assembly
+);
+```
+
+Chỉ những module tham gia giao tiếp bất đồng bộ mới cần pass assembly vào đây.
+
+---
+
+## RabbitMQ Topic Exchange — Publish/Subscribe
+
+RabbitMQ sử dụng Topic Exchange cho Pub/Sub pattern. Khi Catalog Module publish `ProductPriceChangedIntegrationEvent`, MassTransit tự động:
+- Tạo exchange tương ứng với tên event (kebab-case format)
+- Bind exchange với queue của consumer
+
+Basket Module subscribe vào exchange này thông qua `IConsumer<ProductPriceChangedIntegrationEvent>`.
+
+---
+
+## Bắt Đầu Với In-Memory Bus, Sau Đó Chuyển Sang RabbitMQ
+
+Trong quá trình phát triển, chúng ta có thể bắt đầu với in-memory message bus (cấu hình `UsingInMemory`) để đơn giản hóa và debug dễ dàng hơn, sau đó chuyển sang RabbitMQ khi cần:
+
+```csharp
+// In-memory (development)
+config.UsingInMemory((context, cfg) =>
+{
+    cfg.ConfigureEndpoints(context);
+});
+
+// RabbitMQ (production)
+config.UsingRabbitMq((context, cfg) =>
+{
+    // ... configuration
+});
+```
+
+---
+
+## Tổng Kết
+
+Giao tiếp bất đồng bộ với RabbitMQ và MassTransit giúp các module trong Modular Monolith hoạt động độc lập và resilient hơn. Domain events lead to integration events theo luồng:
+
+1. `Product.Update()` → raise `ProductPriceChangedDomainEvent`
+2. EF Core Interceptor dispatch domain event → `ProductPriceChangedDomainEventHandler`
+3. Handler publish `ProductPriceChangedIntegrationEvent` lên RabbitMQ
+4. Basket Module consumer nhận event → `UpdateItemPriceInBasket`
+
+Shared.Messaging library đóng vai trò trung tâm, chứa integration events và MassTransit configuration dùng chung cho tất cả module cần giao tiếp bất đồng bộ.

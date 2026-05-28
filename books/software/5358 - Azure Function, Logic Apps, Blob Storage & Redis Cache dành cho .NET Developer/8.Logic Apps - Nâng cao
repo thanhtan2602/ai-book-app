@@ -1,0 +1,138 @@
+## Copy Blob giữa các Container
+
+Một use case phổ biến của Logic Apps là di chuyển blob giữa các container. Chúng ta sẽ tạo Logic App để:
+
+1. Lắng nghe khi file được upload vào `logic-app-folder`
+2. Tự động copy file sang `logic-app-folder-processed`
+
+### Tạo Logic App với Blob Trigger
+
+1. Tạo Logic App mới: `spooky-request-on-image-upload`
+2. Thêm trigger: **Azure Blob Storage → When a blob is added or modified**
+   - Cấu hình connection với storage account key
+   - Container cần monitor: `logic-app-folder`
+   - Kiểm tra mỗi: 30 giây (không nên set quá thấp để tránh vượt giới hạn miễn phí)
+3. Thêm action: **Azure Blob Storage → Copy Blob**
+   - Source URL: Lấy từ step trước (List of file path)
+   - Destination: `logic-app-folder-processed/{file-name}`
+   - Overwrite: True
+
+### Quan sát hoạt động
+
+Upload file vào `logic-app-folder`, đợi khoảng 30 giây, rồi kiểm tra `logic-app-folder-processed` - file sẽ xuất hiện tự động!
+
+Lưu ý trong **Trigger History**: Logic App sẽ bị skip nhiều lần (khi không có file mới) và chỉ chạy thực sự khi có blob mới.
+
+## Luồng nâng cao với nhiều bước xử lý
+
+Bây giờ chúng ta sẽ xây dựng một luồng phức tạp hơn:
+
+1. File được upload → `logic-app-folder`
+2. Copy sang `logic-app-folder-processed`
+3. Song song:
+   - Backup lên Dropbox
+   - Kiểm tra loại file và phân loại vào thư mục phù hợp
+
+## Tích hợp Dropbox
+
+Sau khi copy blob, thêm action để lưu sang Dropbox:
+
+1. Thêm action: **Get Blob Content** (cần lấy nội dung file trước)
+2. Thêm action: **Dropbox → Create File**
+   - Folder: `/Azure Fundamentals`
+   - File name: Lấy từ blob trigger (List of File Name)
+   - File content: Lấy từ Get Blob Content
+
+Logic App tự động kết nối với Dropbox sau khi bạn đăng nhập vào tài khoản Dropbox.
+
+## Parallel Execution - Thực thi song song
+
+Logic App cho phép thêm các bước chạy **song song**. Nhấp vào dấu `+` và chọn **Add a parallel branch**:
+
+- **Nhánh 1:** Backup lên Dropbox (đã cấu hình)
+- **Nhánh 2:** Kiểm tra loại file (Condition)
+
+## If-Else Condition trong Logic App
+
+Thêm **Control → Condition** vào nhánh 2:
+
+```
+If (List of File Name) EndsWith ".png"
+OR (List of File Name) EndsWith ".jpg"
+OR (List of File Name) EndsWith ".jpeg"
+```
+
+**Lưu ý quan trọng:** Mặc định Logic App dùng điều kiện AND giữa các dòng. Bạn cần đổi sang **Or** để logic chính xác.
+
+### True Branch (là ảnh):
+Thêm action: **Copy Blob**
+- Source: List of file path
+- Destination: `logic-app-folder-processed/images/{file-name}`
+- Overwrite: True
+
+### False Branch (không phải ảnh):
+Thêm action: **Copy Blob**
+- Destination: `logic-app-folder-processed/non-images/{file-name}`
+
+Sau đó thêm **Switch** để phân loại tiếp theo media type.
+
+## Switch Case trong Logic App
+
+Trong False Branch, sau khi copy vào `non-images`, thêm **Control → Switch**:
+
+- **On (condition):** Media Type từ Copy Blob action
+- **Case 1:** `application/pdf` → Copy vào `non-images/pdf/`
+- **Case 2:** `application/x-zip-compressed` → Copy vào `non-images/zip/`
+- **Default:** Copy vào `non-images/other/`
+
+### Lấy Media Type từ Blob
+
+Khi cần lấy media type từ blob đã copy, sử dụng **See More** trong dynamic content để tìm thuộc tính của action trước đó:
+
+1. Nhấp vào Switch On field
+2. Chọn **Dynamic content**
+3. Expand action "Move blob to non-images folder"
+4. Chọn **Media Type**
+
+### Cấu hình từng Case
+
+Mỗi case thêm action **Copy Blob**:
+- Source URL: Path of file or folder từ "Move blob to non-images"
+- Destination: Đường dẫn tương ứng (`non-images/pdf/`, `non-images/zip/`, `non-images/other/`)
+- Overwrite: True
+- **Quan trọng:** Kết thúc đường dẫn folder bằng dấu `/` để tạo thư mục đúng
+
+## Kiểm tra toàn bộ luồng
+
+Upload nhiều loại file vào `logic-app-folder`:
+- File ảnh (.png, .jpg)
+- File PDF
+- File ZIP
+- File Word/PowerPoint
+
+Sau khoảng 30 giây, kiểm tra các container:
+- `logic-app-folder-processed/images/` - Chứa ảnh
+- `logic-app-folder-processed/non-images/pdf/` - Chứa PDF
+- `logic-app-folder-processed/non-images/zip/` - Chứa ZIP
+- `logic-app-folder-processed/non-images/other/` - Chứa các loại khác
+- Dropbox `/Azure Fundamentals/` - Bản sao lưu tất cả files
+
+## Đặt tên có nghĩa cho các bước
+
+Bạn có thể đổi tên các bước trong Logic App Designer để dễ hiểu hơn:
+
+- "Copy blob" → "Move blob to images folder"
+- "Copy blob 2" → "Backup in Dropbox"
+- "Condition" → "Check if it is image"
+
+Điều này giúp logic app dễ đọc và debug hơn khi làm việc trong team.
+
+## Sức mạnh của Logic Apps
+
+Toàn bộ luồng phức tạp trên được xây dựng trong vài chục phút mà không cần viết code. Bất kỳ nhà phát triển hoặc business analyst nào cũng có thể hiểu và duy trì workflow này.
+
+Logic Apps đặc biệt mạnh khi:
+- Tích hợp với nhiều dịch vụ bên thứ ba
+- Xây dựng workflow tự động hóa
+- Xử lý file và routing dữ liệu
+- Gửi thông báo và email tự động

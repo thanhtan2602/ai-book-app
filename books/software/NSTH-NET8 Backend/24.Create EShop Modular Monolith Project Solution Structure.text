@@ -1,0 +1,238 @@
+## Tạo EShop Modular Monolith Project Solution Structure
+
+Trong phần này, chúng ta sẽ xây dựng cấu trúc solution cho dự án EShop Modular Monolith. Quá trình này bao gồm tạo GitHub repository, tổ chức solution theo các thư mục cụ thể, và setup các projects ban đầu.
+
+## Tạo GitHub Repository
+
+Bước đầu tiên là tạo GitHub repository để host dự án, cho phép quản lý code và cộng tác.
+
+1. Mở GitHub, vào Repositories và click **New**
+2. Đặt tên repository: `modular-monoliths`
+3. Thêm mô tả: "Modular Monolith Architecture with .NET"
+4. Chọn **Public** (sau khi publish khóa học)
+5. Thêm `.gitignore` template: chọn **Visual Studio** (rất quan trọng!)
+6. Chọn license: **MIT**
+7. Click **Create Repository**
+
+Sau khi tạo, clone repository về máy local qua Visual Studio: **Code → Open with Visual Studio**. Trong cửa sổ Clone Repository, chọn đường dẫn local và click **Clone**.
+
+Sau khi clone xong, tạo thư mục `src` (source) ngay trong root của repository để chứa toàn bộ source code.
+
+## Tạo Blank Solution
+
+Trong Visual Studio, tạo blank solution mới:
+
+1. Vào **File → New Project**
+2. Chọn template **Blank Solution**
+3. Đặt tên solution: `eshop-modular-monoliths`
+4. Chọn location: thư mục `src` vừa tạo trong repository
+
+Lưu ý: Visual Studio mặc định tạo thêm một subfolder cùng tên với solution. Để tránh nested folder không cần thiết, sau khi tạo hãy:
+- Cut file `.sln` ra khỏi subfolder đó
+- Paste vào thư mục `src` trực tiếp
+- Xóa subfolder trống
+
+Kết quả cuối cùng: `modular-monoliths/src/eshop-modular-monoliths.sln`
+
+## Cấu Trúc Thư Mục (Folder Structure)
+
+Tạo ba solution folders chính bằng cách click chuột phải vào solution → **Add → New Solution Folder**:
+
+### Bootstrapper
+Chứa API project – entry point của toàn bộ ứng dụng. Đây là nơi expose endpoints cho tất cả modules, cấu hình dependency injection, middleware và routing trong `Program.cs`.
+
+### Modules
+Chứa các individual modules theo Domain Driven Design bounded context analysis:
+- **Catalog** – quản lý sản phẩm
+- **Basket** – quản lý shopping cart
+- **Ordering** – xử lý đơn hàng
+- **Identity** – authentication và authorization
+
+Mỗi module là một class library project với domain logic, data access và features riêng.
+
+### Shared
+Chứa shared libraries và common components dùng chung giữa các modules, bao gồm:
+- **Shared.Common** – utility classes, helpers, extension methods, logging, exception handling
+- **Shared.Contracts** – interfaces cho synchronous inter-module communication
+- **Shared.Messaging** – configurations cho asynchronous messaging với RabbitMQ và MassTransit
+
+## Tạo Bootstrapper API Project
+
+Trong solution folder **Bootstrapper**, thêm ASP.NET Core Empty Project:
+
+1. Click chuột phải → **Add → New Project**
+2. Chọn template **ASP.NET Core Empty** (không phải Web API)
+3. Đặt tên: `API`
+4. Location: `src\Bootstrapper\API` (thêm `\Bootstrapper` vào đường dẫn để Visual Studio tạo thư mục vật lý)
+5. Target framework: **.NET 8**
+6. Bật HTTPS, không bật Docker (sẽ cấu hình Docker Compose sau)
+
+Dùng Empty project thay vì Web API vì nó cung cấp minimal setup, hoàn toàn phù hợp với yêu cầu của chúng ta.
+
+### Cấu hình Program.cs
+
+```csharp
+var builder = WebApplication.CreateBuilder(args);
+
+// Đăng ký services vào DI container (trước khi build)
+// builder.Services.AddCatalogModule(builder.Configuration);
+
+var app = builder.Build();
+
+// Cấu hình HTTP request pipeline (sau khi build)
+app.UseHttpsRedirection();
+
+app.Run();
+```
+
+Nguyên tắc: tách rõ phần **trước build** (đăng ký services, DI container) và **sau build** (cấu hình HTTP pipeline, middleware).
+
+### Cấu hình Launch Settings
+
+Trong `Properties/launchSettings.json`, cập nhật:
+
+```json
+{
+  "profiles": {
+    "https": {
+      "applicationUrl": "https://localhost:5050;http://localhost:5000",
+      "launchBrowser": false
+    }
+  }
+}
+```
+
+- Port HTTPS: `5050`, HTTP: `5000` (local development)
+- `launchBrowser: false` – dùng Postman thay vì browser
+- Khi deploy Docker: port sẽ là `6060`/`6061`
+
+## Tạo Module Projects
+
+Cho mỗi module, tạo một **Class Library project** trong solution folder tương ứng.
+
+### Catalog Module
+
+```
+Location: src\Modules\Catalog\Catalog.csproj
+Target framework: .NET 8
+```
+
+### Basket Module
+
+```
+Location: src\Modules\Basket\Basket.csproj
+Target framework: .NET 8
+```
+
+### Ordering Module
+
+```
+Location: src\Modules\Ordering\Ordering.csproj
+Target framework: .NET 8
+```
+
+Mỗi module xử lý domain riêng:
+- **Catalog:** Quản lý product details, categories, inventory
+- **Basket:** Shopping cart functionalities – thêm, cập nhật, xóa items
+- **Ordering:** Order processing – tạo, cập nhật, quản lý orders
+
+## Vertical Slice Architecture vs Clean Architecture
+
+### Vertical Slice Architecture
+
+Được giới thiệu bởi Jimmy Bogard. Thay vì tổ chức code theo technical layers (presentation/application/data), Vertical Slice tổ chức code theo **features** – mỗi feature cắt ngang qua tất cả các layers.
+
+Đặc điểm:
+- Mỗi feature là một "slice" độc lập, self-contained
+- Giảm dependencies giữa các phần khác nhau
+- Phù hợp với Agile/Scrum – giao hàng feature hoàn chỉnh từng sprint
+- Hỗ trợ cross-functional teams
+
+Ví dụ cấu trúc:
+```
+Catalog/
+  Products/
+    Features/
+      GetProducts/
+        GetProductsHandler.cs
+        GetProductsEndpoint.cs
+      CreateProduct/
+        CreateProductCommand.cs
+        CreateProductHandler.cs
+        CreateProductEndpoint.cs
+    Models/
+      Product.cs
+    Data/
+      CatalogDbContext.cs
+```
+
+### Clean Architecture
+
+Được giới thiệu bởi Uncle Bob (Robert C. Martin). Tổ chức code theo layers với dependency rules: inner layers không phụ thuộc outer layers.
+
+Layers:
+- **Entities (Domain):** Business objects, enterprise rules
+- **Use Cases (Application):** Application-specific business rules
+- **Interface Adapters (Infrastructure):** Chuyển đổi dữ liệu giữa use cases và external systems
+- **Frameworks & Drivers:** REST controllers, database repositories
+
+### Khi nào chọn cái nào?
+
+| Tiêu chí | Vertical Slice | Clean Architecture |
+|----------|----------------|-------------------|
+| Rapid development | Tốt hơn | Phức tạp hơn |
+| Long-term maintainability | Vừa | Tốt hơn |
+| Agile/Scrum teams | Phù hợp | Ít phù hợp hơn |
+| Complex business rules | Vừa | Phù hợp |
+
+**Trong khóa học này:** Catalog và Basket modules dùng **Vertical Slice Architecture + DDD**. Ordering module cũng tương tự. Lý do: Vertical Slice giúp phát triển feature nhanh, dễ test và deploy độc lập.
+
+## Shared Kernel Pattern
+
+### Khái niệm
+
+Shared Kernel Pattern trong DDD là cách chia sẻ một tập nhỏ domain model giữa nhiều bounded contexts (modules). Phần được chia sẻ thường gồm common data structures, utility classes hoặc services mà nhiều module cần dùng.
+
+### Tại sao cần Shared Kernel?
+
+- **Consistency:** Đảm bảo tính nhất quán giữa các modules
+- **Giảm duplication:** Centralize common code, tránh nhân bản
+- **Decoupling:** Chỉ chia sẻ phần tối thiểu cần thiết, giữ phần còn lại độc lập
+
+### Tạo Shared Class Library
+
+Trong solution folder **Shared**, tạo class library project:
+
+```
+Name: Shared
+Location: src\Shared\Shared.csproj
+Target framework: .NET 8
+```
+
+Shared project sẽ chứa:
+- Base entities, value objects, domain events
+- Common NuGet packages (dùng chung cho tất cả modules)
+- Utility classes và extension methods
+
+### Thiết lập Dependencies
+
+Cấu hình dependency: mỗi module phụ thuộc vào Shared project. API project phụ thuộc vào tất cả modules.
+
+```
+Shared ← Catalog
+Shared ← Basket
+Shared ← Ordering
+Catalog, Basket, Ordering ← API
+```
+
+Để thêm project reference, click chuột phải vào module → **Dependencies → Add Project Reference → Shared**.
+
+Xác nhận trong file `.csproj`:
+
+```xml
+<ItemGroup>
+  <ProjectReference Include="..\..\Shared\Shared.csproj" />
+</ItemGroup>
+```
+
+Bằng cách tổ chức solution theo cấu trúc Bootstrapper/Modules/Shared, chúng ta đạt được clean codebase với separation of concerns rõ ràng, dễ quản lý dependencies, và nền tảng vững chắc để phát triển từng module độc lập.

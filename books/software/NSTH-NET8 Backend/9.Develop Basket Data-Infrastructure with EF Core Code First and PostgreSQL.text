@@ -1,0 +1,351 @@
+## Phát triển Basket Data Infrastructure với EF Core Code First và PostgreSQL
+
+Trong chương này, chúng ta sẽ xây dựng tầng data infrastructure cho Basket module sử dụng Entity Framework Core theo phương pháp Code First và kết nối PostgreSQL. Cách tiếp cận tương tự với những gì đã làm cho Catalog module, nhưng với context và schema riêng biệt.
+
+---
+
+## Kiến trúc đa DbContext trong Modular Monolith
+
+Trong kiến trúc Modular Monolith, mỗi module cần **data isolation** — tức là dữ liệu của từng module phải được tách biệt, không trộn lẫn. Cách thực hiện là mỗi module có DbContext riêng, và mỗi DbContext được cấu hình dùng một **schema riêng** trong cùng một database PostgreSQL.
+
+```
+PostgreSQL Database: eshop_db
+├── Schema: catalog
+│   └── Table: products
+├── Schema: basket
+│   ├── Table: shopping_carts
+│   └── Table: shopping_cart_items
+└── Schema: public (mặc định)
+```
+
+Điều này đảm bảo:
+- Mỗi module chỉ đọc/ghi dữ liệu trong schema của mình
+- Không có direct database join giữa các module
+- Dễ dàng tách module thành microservice độc lập trong tương lai
+
+---
+
+## BasketDbContext
+
+```csharp
+public class BasketDbContext : DbContext
+{
+    public BasketDbContext(DbContextOptions<BasketDbContext> options)
+        : base(options) { }
+
+    public DbSet<ShoppingCart> ShoppingCarts => Set<ShoppingCart>();
+    public DbSet<ShoppingCartItem> ShoppingCartItems => Set<ShoppingCartItem>();
+
+    protected override void OnModelCreating(ModelBuilder builder)
+    {
+        base.OnModelCreating(builder);
+
+        // Thiết lập schema mặc định cho tất cả table trong context này
+        builder.HasDefaultSchema("basket");
+
+        // Áp dụng tất cả cấu hình entity từ assembly hiện tại
+        builder.ApplyConfigurationsFromAssembly(Assembly.GetExecutingAssembly());
+    }
+}
+```
+
+Phương thức `ApplyConfigurationsFromAssembly` tự động tìm và áp dụng tất cả class implement `IEntityTypeConfiguration<>` trong assembly — giúp `OnModelCreating` gọn gàng, không phải cấu hình từng property một trong đó.
+
+---
+
+## Entity Configurations
+
+### ShoppingCart Configuration
+
+```csharp
+public class ShoppingCartConfiguration : IEntityTypeConfiguration<ShoppingCart>
+{
+    public void Configure(EntityTypeBuilder<ShoppingCart> builder)
+    {
+        builder.HasKey(x => x.Id);
+
+        builder.HasIndex(x => x.UserName).IsUnique();
+
+        builder.Property(x => x.UserName)
+            .IsRequired()
+            .HasMaxLength(100);
+
+        // Quan hệ 1-nhiều với ShoppingCartItem
+        builder.HasMany(x => x.Items)
+            .WithOne()
+            .HasForeignKey(x => x.ShoppingCartId);
+    }
+}
+```
+
+Điểm quan trọng: quan hệ `HasMany...WithOne...HasForeignKey` thiết lập một-nhiều giữa `ShoppingCart` và `ShoppingCartItem`. `ShoppingCartId` trong `ShoppingCartItem` là foreign key trỏ về `ShoppingCart`.
+
+### ShoppingCartItem Configuration
+
+```csharp
+public class ShoppingCartItemConfiguration : IEntityTypeConfiguration<ShoppingCartItem>
+{
+    public void Configure(EntityTypeBuilder<ShoppingCartItem> builder)
+    {
+        builder.HasKey(x => x.Id);
+
+        builder.Property(x => x.ProductId).IsRequired();
+        builder.Property(x => x.Quantity).IsRequired();
+        builder.Property(x => x.Color).HasColumnType("varchar(50)");
+        builder.Property(x => x.Price).IsRequired();
+        builder.Property(x => x.ProductName).IsRequired();
+
+        // Không cần cấu hình quan hệ ở đây vì đã cấu hình trong ShoppingCartConfiguration
+        // để tránh duplicate relationship columns
+    }
+}
+```
+
+**Lưu ý quan trọng**: Quan hệ chỉ cần cấu hình ở một phía (trong `ShoppingCartConfiguration`). Nếu cấu hình ở cả hai phía sẽ tạo ra cột foreign key trùng lặp.
+
+---
+
+## EF Core Relations — Pattern HasMany/WithOne
+
+Trong DDD, entities thường có quan hệ với nhau. EF Core xử lý các quan hệ này theo pattern `Has*` và `With*`:
+
+- **Một-nhiều (1-N)**: `HasMany(x => x.Items).WithOne().HasForeignKey(x => x.ShoppingCartId)`
+- **Nhiều-một (N-1)**: `HasOne(x => x.Cart).WithMany(x => x.Items).HasForeignKey(x => x.CartId)`
+- **Một-một (1-1)**: `HasOne(x => x.Address).WithOne(x => x.Order).HasForeignKey<Address>(x => x.OrderId)`
+
+Ví dụ từ Ordering module về Complex Type (Value Object mapping):
+
+```csharp
+// Trong EF Core 8, Complex Types hỗ trợ tốt hơn cho Value Objects của DDD
+[ComplexType]
+public class Address
+{
+    public string Street { get; set; } = default!;
+    public string City { get; set; } = default!;
+    public string Country { get; set; } = default!;
+}
+
+// Trong Order entity:
+// builder.ComplexProperty(x => x.BillingAddress);
+// builder.ComplexProperty(x => x.ShippingAddress);
+```
+
+Complex Type không có primary key riêng, được map vào cùng bảng với entity chứa nó — phù hợp cho Value Objects trong DDD.
+
+---
+
+## Connection String
+
+Connection string được cấu hình một lần trong API project, dùng chung cho tất cả module:
+
+```json
+// appsettings.json (Bootstrapper API)
+{
+  "ConnectionStrings": {
+    "Database": "Server=localhost;Port=5432;Database=EShopDb;User Id=postgres;Password=postgres;Include Error Detail=true"
+  }
+}
+```
+
+Không cần connection string riêng cho từng module vì tất cả module đều kết nối cùng một PostgreSQL instance, chỉ khác schema.
+
+---
+
+## Đăng ký BasketDbContext vào DI
+
+```csharp
+// BasketModule.cs
+public static IServiceCollection AddBasketModule(
+    this IServiceCollection services, IConfiguration configuration)
+{
+    var connectionString = configuration.GetConnectionString("Database");
+
+    services.AddDbContext<BasketDbContext>(options =>
+    {
+        options.UseNpgsql(connectionString);
+        options.AddInterceptors(
+            new AuditableEntityInterceptor(),
+            new DispatchDomainEventsInterceptor(/* mediator */)
+        );
+    });
+
+    return services;
+}
+```
+
+Hai interceptor từ thư viện Shared:
+- **`AuditableEntityInterceptor`**: Tự động ghi `CreatedAt`, `UpdatedAt` cho các entity
+- **`DispatchDomainEventsInterceptor`**: Publish domain events sau khi `SaveChanges` thành công
+
+---
+
+## Tạo Migrations
+
+Basket module có DbContext riêng, nên migration cũng được tạo riêng. Trong Package Manager Console:
+
+```powershell
+# Thiết lập Default Project = basket
+# Startup Project = API (Bootstrapper)
+
+Add-Migration InitialCreate `
+  -OutputDir Data/Migrations `
+  -Project Basket `
+  -StartupProject API `
+  -Context BasketDbContext
+
+# Nếu có nhiều DbContext, phải chỉ định -Context để tránh lỗi
+# "More than one DbContext was found"
+```
+
+Migration được tạo trong `Basket/Data/Migrations/`:
+
+```csharp
+// InitialCreate.cs
+public partial class InitialCreate : Migration
+{
+    protected override void Up(MigrationBuilder migrationBuilder)
+    {
+        // Tạo schema basket
+        migrationBuilder.EnsureSchema(name: "basket");
+
+        // Tạo bảng shopping_carts
+        migrationBuilder.CreateTable(
+            name: "shopping_carts",
+            schema: "basket",
+            columns: table => new
+            {
+                Id = table.Column<Guid>(nullable: false),
+                UserName = table.Column<string>(maxLength: 100, nullable: false),
+                CreatedAt = table.Column<DateTime>(nullable: true),
+                LastModified = table.Column<DateTime>(nullable: true)
+            },
+            constraints: table =>
+            {
+                table.PrimaryKey("PK_shopping_carts", x => x.Id);
+            });
+
+        // Tạo unique index cho UserName
+        migrationBuilder.CreateIndex(
+            name: "IX_shopping_carts_UserName",
+            schema: "basket",
+            table: "shopping_carts",
+            column: "UserName",
+            unique: true);
+
+        // Tạo bảng shopping_cart_items
+        migrationBuilder.CreateTable(
+            name: "shopping_cart_items",
+            schema: "basket",
+            columns: table => new
+            {
+                Id = table.Column<Guid>(nullable: false),
+                ShoppingCartId = table.Column<Guid>(nullable: false),
+                ProductId = table.Column<Guid>(nullable: false),
+                Quantity = table.Column<int>(nullable: false),
+                Color = table.Column<string>(maxLength: 50, nullable: false),
+                Price = table.Column<decimal>(nullable: false),
+                ProductName = table.Column<string>(nullable: false)
+            },
+            constraints: table =>
+            {
+                table.PrimaryKey("PK_shopping_cart_items", x => x.Id);
+                table.ForeignKey(
+                    name: "FK_shopping_cart_items_shopping_carts_ShoppingCartId",
+                    column: x => x.ShoppingCartId,
+                    principalSchema: "basket",
+                    principalTable: "shopping_carts",
+                    principalColumn: "Id",
+                    onDelete: ReferentialAction.Cascade);
+            });
+    }
+
+    protected override void Down(MigrationBuilder migrationBuilder)
+    {
+        migrationBuilder.DropTable(name: "shopping_cart_items", schema: "basket");
+        migrationBuilder.DropTable(name: "shopping_carts", schema: "basket");
+    }
+}
+```
+
+---
+
+## Auto-Migration khi Khởi động
+
+Thay vì chạy `Update-Database` thủ công mỗi lần, chúng ta tự động migrate khi ứng dụng khởi động bằng extension method từ thư viện Shared:
+
+```csharp
+// Shared/Data/Extensions/DatabaseExtensions.cs
+public static class DatabaseExtensions
+{
+    public static IApplicationBuilder UseMigration<TContext>(
+        this IApplicationBuilder app) where TContext : DbContext
+    {
+        MigrateDatabaseAsync<TContext>(app.ApplicationServices).GetAwaiter().GetResult();
+        return app;
+    }
+
+    private static async Task MigrateDatabaseAsync<TContext>(
+        IServiceProvider serviceProvider) where TContext : DbContext
+    {
+        using var scope = serviceProvider.CreateScope();
+        var context = scope.ServiceProvider.GetRequiredService<TContext>();
+        await context.Database.MigrateAsync();
+    }
+}
+```
+
+Và gọi trong `BasketModule`:
+
+```csharp
+public static IApplicationBuilder UseBasketModule(this IApplicationBuilder app)
+{
+    app.UseMigration<BasketDbContext>();
+    return app;
+}
+```
+
+Khi ứng dụng khởi động, `Program.cs` gọi:
+
+```csharp
+app.UseCatalogModule();  // → UseMigration<CatalogDbContext>
+app.UseBasketModule();   // → UseMigration<BasketDbContext>
+```
+
+Lần lượt tạo schema và table cho cả hai module.
+
+---
+
+## Xác minh với pgAdmin
+
+Sau khi chạy ứng dụng, kiểm tra trong pgAdmin:
+
+```
+EShopDb
+└── Schemas
+    ├── basket
+    │   └── Tables
+    │       ├── shopping_carts
+    │       └── shopping_cart_items
+    ├── catalog
+    │   └── Tables
+    │       └── products
+    └── public
+```
+
+Database `EShopDb` được tạo tự động nếu chưa tồn tại. Schema `basket` và `catalog` được tạo riêng biệt với đúng các table và foreign key constraint.
+
+---
+
+## Tổng kết
+
+Trong chương này, chúng ta đã:
+
+- Hiểu tại sao cần đa DbContext trong Modular Monolith — đảm bảo data isolation
+- Tạo `BasketDbContext` với schema mặc định là `basket`
+- Cấu hình entity bằng `IEntityTypeConfiguration` — tách cấu hình khỏi `OnModelCreating`
+- Thiết lập quan hệ 1-nhiều giữa `ShoppingCart` và `ShoppingCartItem` đúng cách (chỉ cấu hình ở một phía)
+- Tạo migration cho `BasketDbContext` với chỉ định `-Context` để tránh xung đột
+- Tự động migrate database khi ứng dụng khởi động bằng `UseMigration<>` extension method
+- Đăng ký các interceptor từ Shared library (Auditable + DomainEvents)
+
+Tầng data infrastructure đã hoàn chỉnh. Tiếp theo sẽ phát triển các application use cases cho Basket module.
