@@ -1,0 +1,417 @@
+## Docker Compose và Networking
+
+### Tổng Quan Chương
+
+Trong chương này, chúng ta sẽ nâng cao hơn với các khái niệm networking phức tạp:
+- Thiết lập Reverse Proxy với nginx
+- SSL Termination — quản lý SSL tập trung
+- DNS names cho services
+- Docker Compose internal networking
+
+---
+
+## Hiểu Về Reverse Proxy
+
+### Reverse Proxy là gì?
+
+**Reverse Proxy** là một server đứng trước các web server khác và chuyển tiếp requests đến các server phía sau. Hãy tưởng tượng ứng dụng của chúng ta có hai web server chạy: một host API và một host MVC client.
+
+Trong ứng dụng microservices phức tạp, bạn có thể có hàng chục web servers/containers. Reverse proxy là **điểm vào duy nhất** (single entry point) phân phối requests đến đúng service.
+
+### Lợi Ích Chính
+
+1. **Load Balancing**: Phân phối load requests đều giữa nhiều instances của cùng một service — nếu cần, có thể scale một service bất kỳ
+2. **SSL/TLS Encryption**: Xử lý toàn bộ SSL tại reverse proxy, không cần cấu hình SSL cho từng service riêng lẻ
+3. **Caching và Compression**: Cải thiện hiệu suất tổng thể khi trả về content
+4. **Quản lý tập trung**: Một điểm cấu hình thay vì quản lý nhiều server
+
+---
+
+## Giới Thiệu NGINX
+
+**NGINX** (đọc là "engine-x") là web server mã nguồn mở miễn phí, có thể dùng như:
+- Reverse proxy server
+- Load balancer
+- Mail proxy
+- HTTP cache
+
+Nginx được thiết kế tập trung vào **hiệu suất cao** và có thể được containerize dễ dàng.
+
+---
+
+## Thiết Lập NGINX với Docker Compose
+
+### Cấu Trúc Thư Mục
+
+Tạo folder `nginx/` ở cùng cấp với solution file:
+
+```
+solution/
+├── ConferenceAttendees.API/
+├── ConferenceAttendees.MVC/
+├── nginx/
+│   ├── Dockerfile
+│   └── nginx.conf
+└── docker-compose.yml
+```
+
+### Dockerfile cho NGINX
+
+```dockerfile
+FROM nginx:latest
+
+# Xóa config mặc định
+RUN rm /etc/nginx/conf.d/default.conf
+
+# Copy config của chúng ta
+COPY nginx.conf /etc/nginx/nginx.conf
+
+# Tạo thư mục cho logs
+RUN mkdir -p /var/log/nginx && \
+    touch /var/log/nginx/access.log && \
+    touch /var/log/nginx/error.log
+
+EXPOSE 8083
+
+CMD ["nginx", "-g", "daemon off;"]
+```
+
+**Lưu ý về port**: Port 80 trên máy Windows thường bị IIS chiếm dụng, nên chúng ta dùng port `8083` thay thế.
+
+### nginx.conf
+
+```nginx
+worker_processes 1;
+
+events {
+    worker_connections 1024;
+}
+
+http {
+    include mime.types;
+    sendfile on;
+
+    log_format main '$remote_addr - $remote_user [$time_local] "$request" '
+                    '$status $body_bytes_sent "$http_referer" '
+                    '"$http_user_agent" "$http_x_forwarded_for"';
+
+    access_log /var/log/nginx/access.log main;
+    error_log /var/log/nginx/error.log;
+
+    # API Server
+    server {
+        listen 8083;
+        server_name api.conferenceattendees.com;
+
+        location / {
+            proxy_pass http://conferenceattendees.api:7106;
+            proxy_set_header Host $host;
+            proxy_set_header X-Real-IP $remote_addr;
+            proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;
+            proxy_set_header X-Forwarded-Proto $scheme;
+        }
+    }
+
+    # MVC Client Server
+    server {
+        listen 8083;
+        server_name conferenceattendees.com;
+
+        location / {
+            proxy_pass http://conferenceattendees.mvc:7304;
+            proxy_set_header Host $host;
+            proxy_set_header X-Real-IP $remote_addr;
+            proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;
+            proxy_set_header X-Forwarded-Proto $scheme;
+        }
+    }
+}
+```
+
+Giải thích:
+- `server_name`: Địa chỉ DNS mà nginx sẽ lắng nghe
+- `proxy_pass`: Forward request đến container cụ thể trong Docker network
+
+### Cấu Hình Forwarded Headers
+
+Trong `Program.cs` của cả API và MVC, thêm:
+
+```csharp
+app.UseForwardedHeaders(new ForwardedHeadersOptions
+{
+    ForwardedHeaders = ForwardedHeaders.XForwardedFor | ForwardedHeaders.XForwardedProto
+});
+```
+
+Điều này đảm bảo ứng dụng chấp nhận header thông tin từ reverse proxy.
+
+### Thêm NGINX vào docker-compose.yml
+
+```yaml
+services:
+  nginx:
+    build:
+      context: .
+      dockerfile: nginx/Dockerfile
+    ports:
+      - "8083:8083"
+    depends_on:
+      - conferenceattendees.mvc
+
+  conferenceattendees.api:
+    # ... config trước
+    networks:
+      - app-network
+
+  conferenceattendees.mvc:
+    # ... config trước
+    networks:
+      - app-network
+
+  nginx:
+    # ... config nginx
+    networks:
+      - app-network
+
+networks:
+  app-network:
+    driver: bridge
+```
+
+**`depends_on: conferenceattendees.mvc`**: NGINX chỉ khởi động sau khi MVC (container cuối cùng) đã sẵn sàng, vì MVC phụ thuộc vào API, API phụ thuộc vào database. Vậy khi MVC sẵn sàng, toàn bộ stack đã chạy.
+
+---
+
+## Cấu Hình DNS Local
+
+Để routing `conferenceattendees.com` về localhost, cần chỉnh file **hosts**:
+
+**Trên Windows**: `C:\Windows\System32\drivers\etc\hosts`
+
+Mở với quyền Administrator (Notepad++ run as Admin) và thêm:
+```
+127.0.0.1    conferenceattendees.com
+127.0.0.1    api.conferenceattendees.com
+```
+
+Sau khi lưu, browser sẽ resolve các domain này về localhost. Truy cập `conferenceattendees.com:8083` để vào MVC app, `api.conferenceattendees.com:8083` để vào API.
+
+**Lưu ý**: Bạn cũng có thể thấy phần Docker Desktop tự thêm vào hosts file:
+```
+# Added by Docker Desktop
+192.168.65.254    gateway.docker.internal
+```
+Đây là lý do `host.docker.internal` hoạt động được.
+
+---
+
+## Hiểu SSL Termination
+
+### SSL Termination là gì?
+
+**SSL Termination** (hay SSL Offloading) là việc giải mã traffic HTTPS tại load balancer/reverse proxy thay vì tại từng web server.
+
+**Không dùng SSL Termination:**
+- Mỗi API, mỗi client app phải có SSL certificate riêng
+- Phải quản lý nhiều certificates (gia hạn, revoke, ...)
+- Mỗi server phải tốn tài nguyên để encrypt/decrypt
+
+**Dùng SSL Termination tại NGINX:**
+- Chỉ cần một certificate tại NGINX
+- Traffic từ internet đến NGINX: HTTPS (có mã hóa)
+- Traffic từ NGINX đến các services bên trong: HTTP (không cần mã hóa, vì internal network)
+- Quản lý tập trung, dễ scale
+
+---
+
+## Thêm SSL cho API qua NGINX
+
+### Tạo SSL Certificate với OpenSSL
+
+**Bước 1**: Cài đặt WSL (Windows Subsystem for Linux) nếu dùng Windows:
+```bash
+wsl --install -d Ubuntu
+```
+
+**Bước 2**: Tạo file cấu hình `nginx/api-cert.conf`:
+```ini
+[req]
+default_bits = 2048
+default_keyfile = api-cert.key
+distinguished_name = req_distinguished_name
+req_extensions = req_ext
+x509_extensions = v3_ca
+
+[req_distinguished_name]
+countryName = Country Name (2 letter code)
+countryName_default = US
+stateOrProvinceName = State or Province Name (full name)
+stateOrProvinceName_default = California
+localityName = Locality Name (eg, city)
+localityName_default = San Francisco
+organizationName = Organization Name (eg, company)
+organizationName_default = Conference Attendees
+commonName = Common Name (e.g. server FQDN or YOUR name)
+commonName_default = api.conferenceattendees.com
+
+[req_ext]
+subjectAltName = @alt_names
+
+[v3_ca]
+subjectAltName = @alt_names
+
+[alt_names]
+DNS.1 = api.conferenceattendees.com
+```
+
+**Bước 3**: Generate certificate (chạy trong WSL terminal):
+```bash
+# Navigate đến nginx folder
+cd /mnt/c/path/to/project/nginx
+
+# Generate key và certificate
+sudo openssl req -x509 -nodes -days 365 -newkey rsa:2048 \
+  -keyout api-cert.key \
+  -out api-cert.crt \
+  -config api-cert.conf
+
+# Generate PFX file
+sudo openssl pkcs12 -export \
+  -out api-cert.pfx \
+  -inkey api-cert.key \
+  -in api-cert.crt \
+  -passout pass:Password1!
+```
+
+**Bước 4**: Cài certificate lên Windows (để browser tin tưởng):
+- Double-click file `.pfx` → Certificate Import Wizard
+- Install vào **Local Machine** → **Trusted Root Certification Authorities**
+
+### Cập Nhật Dockerfile của NGINX
+
+```dockerfile
+FROM nginx:latest
+
+RUN rm /etc/nginx/conf.d/default.conf
+COPY nginx.conf /etc/nginx/nginx.conf
+
+# Copy SSL certificates
+COPY api-cert.key /etc/ssl/private/api-cert.key
+COPY api-cert.crt /etc/ssl/certs/api-cert.crt
+
+RUN mkdir -p /var/log/nginx && \
+    touch /var/log/nginx/access.log && \
+    touch /var/log/nginx/error.log
+
+EXPOSE 44391
+
+CMD ["nginx", "-g", "daemon off;"]
+```
+
+### Cập Nhật nginx.conf cho HTTPS
+
+```nginx
+# Upstream definitions
+upstream api {
+    server conferenceattendees.api:7106;
+}
+
+upstream mvc {
+    server conferenceattendees.mvc:7304;
+}
+
+server {
+    listen 44391 ssl;
+    server_name api.conferenceattendees.com;
+
+    ssl_certificate /etc/ssl/certs/api-cert.crt;
+    ssl_certificate_key /etc/ssl/private/api-cert.key;
+
+    location / {
+        proxy_pass http://api;
+        proxy_set_header Host $host;
+        proxy_set_header X-Real-IP $remote_addr;
+        proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;
+        proxy_set_header X-Forwarded-Proto $scheme;
+    }
+}
+```
+
+### Cập Nhật docker-compose.yml
+
+```yaml
+nginx:
+  build:
+    context: .
+    dockerfile: nginx/Dockerfile
+  ports:
+    - "44391:44391"
+  networks:
+    app-network:
+      aliases:
+        - api.conferenceattendees.com
+        - conferenceattendees.com
+```
+
+**Aliases**: Cho phép các services trong cùng Docker network tìm nhau qua domain names — giống như DNS internal.
+
+---
+
+## Thêm SSL cho MVC Client
+
+Lặp lại các bước tương tự cho MVC:
+
+1. Tạo `mvc-cert.conf` với `commonName = conferenceattendees.com`
+2. Generate `mvc-cert.key`, `mvc-cert.crt`, `mvc-cert.pfx`
+3. Install pfx lên Windows (Trusted Root CA)
+4. Cập nhật Dockerfile của NGINX để copy cả hai bộ certificates
+5. Thêm server block mới trong `nginx.conf` cho MVC
+
+### Cập Nhật Dockerfile của API
+
+Để API container tin tưởng certificate của NGINX (khi MVC gọi API qua HTTPS nội bộ):
+
+```dockerfile
+FROM mcr.microsoft.com/dotnet/aspnet:8.0 AS base
+
+# Copy và trust certificate
+COPY nginx/api-cert.crt /usr/local/share/ca-certificates/api-cert.crt
+RUN update-ca-certificates
+
+WORKDIR /app
+# ... rest of Dockerfile
+```
+
+---
+
+## Kết Quả Cuối
+
+Sau khi cấu hình xong, `docker compose up` sẽ:
+
+1. Khởi động SQL Server + Seq
+2. Khởi động API (migrate database)
+3. Khởi động MVC client
+4. Khởi động NGINX reverse proxy
+
+Kiểm tra:
+- `https://conferenceattendees.com:44391` → MVC app (qua NGINX, HTTPS)
+- `https://api.conferenceattendees.com:44391/swagger` → API Swagger (qua NGINX, HTTPS)
+
+Tất cả đều chạy qua HTTPS, certificate được quản lý tập trung tại NGINX, các services bên trong vẫn giao tiếp qua HTTP nội bộ.
+
+---
+
+## Tổng Kết Chương
+
+Trong chương này chúng ta đã:
+
+- Hiểu **Reverse Proxy** là gì và lợi ích của nó
+- Thiết lập **NGINX** như reverse proxy trong Docker Compose
+- Cấu hình **DNS routing** qua hosts file và Docker network aliases
+- Hiểu khái niệm **SSL Termination** — tại sao quản lý SSL tập trung tại proxy là tốt hơn
+- Generate **SSL certificates** bằng OpenSSL trong WSL
+- Cài certificate vào Windows Trusted Root CA
+- Cấu hình NGINX để phục vụ HTTPS traffic và forward đến HTTP services bên trong
+- Sử dụng **Docker Compose internal network** với aliases để routing theo domain names
+
+Chương tiếp theo, chúng ta sẽ học cách **Publishing Custom Images** lên Docker Hub để share và deploy.

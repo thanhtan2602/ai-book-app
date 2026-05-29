@@ -1,0 +1,55 @@
+## Kết Luận
+
+Chúng ta đã trải qua một hành trình thực sự vất vả nhưng vô cùng ý nghĩa, và đã đến lúc kết thúc khóa học này.
+
+### Nhìn Lại Những Gì Đã Học
+
+Trong khóa học này, chúng ta đã:
+
+- **Ôn lại các khái niệm Cloud Native**: Hiểu rõ phát triển ứng dụng Cloud Native là gì và tại sao nó quan trọng.
+
+- **Làm quen với môi trường Docker**: Học cách cài đặt, cấu hình và sử dụng Docker để containerize các ứng dụng của mình.
+
+- **Dockerfile và .NET CLI**: Khám phá cách sử dụng Dockerfile cũng như các công cụ .NET CLI để xây dựng và quản lý container.
+
+- **Tạo và publish images**: Học cách tạo Docker image của riêng mình và đẩy lên Docker Hub công khai.
+
+- **Docker Compose**: Nhận ra rằng mỗi lần chúng ta muốn build, chạy, hoặc orchestrate nhiều thành phần thì có quá nhiều bước thủ công — vì vậy chúng ta đã học **Docker Compose** như một công cụ orchestration để đơn giản hóa quy trình.
+
+- **Kubernetes**: Sau khi nắm vững Docker Compose, chúng ta đã tiến thêm một bước lên **Kubernetes** — tiêu chuẩn công nghiệp cho orchestration. Kubernetes giúp chúng ta quản lý nhiều thành phần trong một **cluster** lớn. Công cụ dòng lệnh `kubectl` là công cụ chính để tương tác với Kubernetes. Chúng ta đã học cách viết và điều chỉnh **K8s Manifest** để spin up tài nguyên với các tham số và cấu hình khác nhau. Chúng ta mới chỉ chạm vào bề mặt — còn rất nhiều điều để khám phá, và bạn chỉ nên dùng những gì thực sự cần thiết cho dự án của mình.
+
+- **.NET Aspire**: Chúng ta cũng đã tìm hiểu **.NET Aspire** — vẫn đang trong preview nhưng rất hứa hẹn — và những công cụ mà nó cung cấp để hỗ trợ phát triển Cloud Native.
+
+---
+
+## Bước Tiếp Theo
+
+Bây giờ bạn đã hoàn thành khóa học và có hiểu biết rõ ràng về Cloud Native, bạn sẽ đi đâu tiếp theo?
+
+**1. Luyện tập liên tục**
+
+Thực hành tạo nên thói quen. Càng làm nhiều lần các lệnh Docker, lệnh Kubernetes... chúng sẽ càng trở thành phản xạ tự nhiên. Nhưng tất nhiên, bạn không thể nhớ hết mọi thứ — bạn là con người, điều đó hoàn toàn bình thường. Điều quan trọng là bạn có đủ nền tảng để biết **cần tìm gì** khi gặp vấn đề.
+
+**2. Thử nghiệm triển khai local**
+
+Hãy thử deploy một ứng dụng Cloud Native trên máy tính của bạn. Nếu bạn định dùng Docker hoặc Kubernetes, bạn cần đảm bảo phần cứng đủ mạnh để xử lý được.
+
+**3. Khám phá Cloud Deployment**
+
+Tìm hiểu các nền tảng cloud khác nhau và các dịch vụ họ cung cấp để hỗ trợ ứng dụng. Bạn có thể không cần đến Kubernetes — GCP, AWS, Azure đều có dịch vụ **container hosting** riêng. Nếu cần Kubernetes thì tất cả các nền tảng này cũng cung cấp **managed Kubernetes**.
+
+**4. Hiện đại hóa ứng dụng cũ**
+
+Nếu bạn đang có một ứng dụng monolithic khó deploy và bảo trì vì mọi thứ quá phụ thuộc vào nhau — hãy bắt đầu suy nghĩ về việc tái cấu trúc nó dựa trên các khái niệm đã học, biến nó thành một ứng dụng Cloud Native portable.
+
+**5. Áp dụng ngay vào dự án mới**
+
+Với bất kỳ dự án mới (Greenfield) nào, hãy bắt đầu với câu hỏi: *"Làm thế nào để tôi thiết kế ứng dụng này thật modular nhất có thể?"*
+
+---
+
+Điều quan trọng nhất là: hãy yêu thích công việc mình làm. Nếu bạn không thích, bạn sẽ nhanh chóng chán ghét nó. Và nếu bạn đã đi đến tận đây trong khóa học, tôi tin rằng bạn đã thực sự thích thú với từng phần.
+
+**Đừng bao giờ ngừng học hỏi.**
+
+Một lần nữa, tôi là Trevor Williams — và xin chân thành cảm ơn bạn đã tham gia khóa học này.

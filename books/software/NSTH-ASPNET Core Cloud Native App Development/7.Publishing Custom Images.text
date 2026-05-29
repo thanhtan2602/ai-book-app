@@ -1,0 +1,319 @@
+## Publishing Custom Images
+
+### Tổng Quan Chương
+
+Trong chương này, chúng ta sẽ học cách:
+- Tạo custom Docker images (đặc biệt là custom database image với data có sẵn)
+- Push images lên remote registry (Docker Hub)
+- Hiểu sự khác biệt giữa Public và Private repositories
+- Versioning images bằng Docker tags và best practices
+
+---
+
+## Tại Sao Cần Custom Images?
+
+Cho đến nay, chúng ta chỉ sử dụng images được pull từ Docker Hub — images của Microsoft, datalust (Seq), nginx... Nhưng đôi khi chúng ta cần **custom images**: một phiên bản đặc biệt của container với dữ liệu hoặc cấu hình riêng được "đóng hộp" sẵn.
+
+### Ví dụ Thực Tế: Database với Data Có Sẵn
+
+Hiện tại, mỗi lần chúng ta chạy Docker Compose:
+1. SQL Server container khởi động (trống)
+2. API khởi động, chạy migration → tạo database và tables
+3. Seed data được load
+
+Vòng lặp này lặp đi lặp lại mỗi lần destroy và recreate containers.
+
+**Vấn đề**: Nếu developer chỉ cần database mà không muốn chạy API, hoặc muốn database với default data sẵn có? Họ phải luôn phụ thuộc vào API để seed data.
+
+**Giải pháp**: Tạo custom database image với data preloaded. Bất kỳ ai dùng image này đều có ngay database với đầy đủ tables và seed data — không cần chạy API.
+
+---
+
+## Tạo Custom Database Image
+
+### Bước 1: Tạo SQL Migration Script
+
+Trong Visual Studio (Package Manager Console):
+```
+Script-Migration -Idempotent
+```
+
+Trong VS Code / CLI:
+```bash
+dotnet ef migrations script --idempotent
+```
+
+Flag `--idempotent` đảm bảo script có thể chạy nhiều lần mà không gây lỗi (kiểm tra trước khi tạo).
+
+### Bước 2: Sửa Script — Thêm Create Database
+
+Mở đầu script SQL, thêm:
+```sql
+IF NOT EXISTS (SELECT name FROM sys.databases WHERE name = 'ConferenceDb')
+    CREATE DATABASE ConferenceDb;
+GO
+
+USE ConferenceDb;
+GO
+```
+
+Script hoàn chỉnh sẽ tạo database, tất cả tables, và insert seed data.
+
+### Bước 3: Chạy Container SQL Mới (Trống)
+
+```bash
+docker run -e "ACCEPT_EULA=Y" -e "SA_PASSWORD=StrongPassword123!" \
+  -p 1444:1433 -d \
+  mcr.microsoft.com/mssql/server
+```
+
+Kết nối bằng Azure Data Studio và chạy toàn bộ migration script — database được tạo với đầy đủ tables và seed data.
+
+### Bước 4: Tạo Snapshot (docker commit)
+
+```bash
+# Cú pháp: docker commit <container_name> <username>/<image_name>
+docker commit vigorous_beaver trevorwilliams/conference-attendees-db
+```
+
+Giải thích:
+- `vigorous_beaver`: Tên container hiện tại (Docker tự đặt nếu không chỉ định)
+- `trevorwilliams`: Docker Hub username của bạn
+- `conference-attendees-db`: Tên image muốn tạo
+
+Lệnh này chụp lại trạng thái hiện tại của container và tạo một image mới từ đó.
+
+### Bước 5: Kiểm Tra Image Mới
+
+```bash
+docker images
+```
+
+Bạn sẽ thấy image mới (`trevorwilliams/conference-attendees-db`) với kích thước lớn hơn base image một chút (do có thêm database data).
+
+### Bước 6: Test Image
+
+```bash
+# Xóa container cũ
+docker rm vigorous_beaver
+
+# Chạy container mới từ custom image
+docker run -e "ACCEPT_EULA=Y" -e "SA_PASSWORD=StrongPassword123!" \
+  -p 1445:1433 -d \
+  trevorwilliams/conference-attendees-db
+```
+
+Kết nối vào container mới — database `ConferenceDb` đã có sẵn với đầy đủ data!
+
+### Bước 7: Cập Nhật docker-compose.yml
+
+Thay thế base SQL Server image bằng custom image:
+
+```yaml
+mssql:
+  image: trevorwilliams/conference-attendees-db
+  environment:
+    - SA_PASSWORD=StrongPassword123!
+    - ACCEPT_EULA=Y
+  ports:
+    - "1400:1433"
+```
+
+Và trong API, bỏ đoạn code auto-migration khi startup — không cần thiết nữa vì database đã có sẵn data.
+
+---
+
+## Docker Hub — Remote Registry
+
+### Docker Hub là gì?
+
+**Docker Hub** là nền tảng lưu trữ và phân phối Docker images tập trung. Tất cả images chúng ta đã pull (SQL Server, Seq, nginx...) đều đến từ Docker Hub.
+
+Khi bạn đăng ký tài khoản, bạn có repository riêng để push images của mình. Images được đặt tên theo format: `username/image-name`.
+
+### Push Image lên Docker Hub
+
+**Cách 1: Qua Docker Desktop UI**
+1. Vào Docker Desktop → Images
+2. Click vào image cần push
+3. Click **"Push to Hub"**
+
+**Cách 2: Qua CLI**
+```bash
+# Đăng nhập Docker Hub
+docker login
+
+# Push image
+docker push trevorwilliams/conference-attendees-db
+
+# Push với tag cụ thể
+docker push trevorwilliams/conference-attendees-db:1.0-alpha
+```
+
+### Pull Image từ Hub (Demo Portability)
+
+Giả sử máy tính bị crash và mất image. Để khôi phục:
+```bash
+docker pull trevorwilliams/conference-attendees-db
+```
+
+Image được kéo về từ cloud — đây chính là sức mạnh của portability. Như GitHub lưu trữ code, Docker Hub lưu trữ container images.
+
+---
+
+## Public vs Private Repositories
+
+### Repository Public
+
+- **Accessible to everyone**: Bất kỳ ai cũng có thể pull image
+- **Phù hợp cho**: Open source projects, educational purposes, sharing tools
+- **Miễn phí** trên Docker Hub (giới hạn số lượng)
+- **Nhược điểm**: Không bảo mật — code và data được expose công khai
+
+### Repository Private
+
+- **Yêu cầu quyền**: Chỉ người được cấp quyền mới pull được
+- **Phù hợp cho**: Ứng dụng thương mại, data nhạy cảm, team nội bộ
+- **Có phí** (Docker Hub, hoặc các alternatives)
+- **Bảo mật hơn**: Images proprietary được bảo vệ
+
+### Các Alternatives cho Private Registry
+
+- **Amazon ECR** (Elastic Container Registry)
+- **Google Container Registry (GCR)**
+- **Azure Container Registry (ACR)**
+- **GitHub Container Registry**
+
+Tất cả đều phù hợp cho lưu trữ images nội bộ của team. Khi chọn, cân nhắc:
+1. **Bảo mật**: Yêu cầu bảo mật của tổ chức
+2. **Loại project**: Open source hay thương mại?
+3. **Collaboration**: Cần cộng đồng rộng hay chỉ team nội bộ?
+4. **Chi phí**: Public miễn phí, private có phí
+
+---
+
+## Versioning Images
+
+### Tại sao Versioning Quan Trọng?
+
+Versioning images cho phép:
+- **Tính nhất quán**: Đảm bảo mọi developer trong team dùng cùng phiên bản
+- **Rollback**: Nếu phiên bản mới có vấn đề, có thể quay về phiên bản cũ ngay lập tức
+- **Audit trail**: Biết chính xác ai đã dùng phiên bản nào khi nào
+- **Dependency management**: Cập nhật base images mà không phá vỡ ứng dụng
+
+### Docker Tags
+
+**Tag** là nhãn gắn vào Docker image, là identifier cho một phiên bản cụ thể.
+
+```bash
+# Tag mặc định khi không chỉ định
+image:latest
+
+# Tag cụ thể
+image:1.0.0
+image:1.0-alpha
+image:stable
+
+# Pull version cụ thể
+docker pull mcr.microsoft.com/dotnet/aspnet:8.0
+```
+
+**Mutable vs Immutable tags:**
+- `latest`: **Mutable** — luôn trỏ đến phiên bản mới nhất, thay đổi mỗi lần push mới
+- `1.0.0`: **Immutable** — nên đại diện cho một phiên bản cố định, không thay đổi
+
+**Vấn đề với `latest`**: Nếu phiên bản latest có lỗi, không dễ rollback vì không có reference đến phiên bản trước.
+
+### Tạo Version Mới
+
+```bash
+# Sau khi thay đổi database (thêm bảng/data mới)
+docker commit tag-testing-container trevorwilliams/conference-attendees-db:1.0-alpha
+
+# Push với tag
+docker push trevorwilliams/conference-attendees-db:1.0-alpha
+
+# Cũng cập nhật latest
+docker commit tag-testing-container trevorwilliams/conference-attendees-db:latest
+docker push trevorwilliams/conference-attendees-db:latest
+```
+
+Kết quả trên Docker Hub: Repository có nhiều tags (`latest`, `1.0-alpha`, `1.1-alpha`...)
+
+---
+
+## Tagging Best Practices
+
+### 1. Semantic Versioning
+
+Cú pháp: `MAJOR.MINOR.PATCH`
+
+```
+1.4.2
+│ │ └── Patch: bug fixes, nhỏ
+│ └──── Minor: tính năng mới, backward compatible
+└────── Major: thay đổi lớn, breaking changes
+```
+
+Ví dụ:
+```bash
+docker tag myapp:latest myapp:1.0.0
+docker tag myapp:latest myapp:1.1.0  # Thêm feature mới
+docker tag myapp:latest myapp:2.0.0  # Breaking change
+```
+
+### 2. Build Number Tags
+
+Dùng trong CI/CD pipeline — unique identifier cho mỗi build:
+```
+myapp:build-1234
+myapp:build-1235
+```
+
+Cho phép trace ngược từ image về đúng build đã tạo ra nó.
+
+### 3. Environment Tags
+
+```
+myapp:staging
+myapp:production
+myapp:development
+```
+
+### 4. Nguyên Tắc Cốt Lõi
+
+- **Không sử dụng `latest` trong production**: Quá không xác định
+- **Immutable tags cho production**: `1.0.0` không nên thay đổi sau khi đã deploy
+- **Semantic versioning**: Theo chuẩn để team hiểu ý nghĩa từng version
+- **Document tags**: Ghi rõ changelog trong repository description
+
+---
+
+## Cập Nhật docker-compose.yml với Versioned Image
+
+```yaml
+mssql:
+  image: trevorwilliams/conference-attendees-db:1.0-alpha
+  environment:
+    - SA_PASSWORD=StrongPassword123!
+    - ACCEPT_EULA=Y
+```
+
+Bằng cách chỉ định tag cụ thể, team luôn dùng đúng phiên bản database — không bị ảnh hưởng khi có phiên bản mới được push.
+
+---
+
+## Tổng Kết Chương
+
+Trong chương này chúng ta đã:
+
+- Hiểu **tại sao cần custom images** — đặc biệt là database image với data preloaded
+- Tạo custom database image bằng **`docker commit`** sau khi chạy migration script
+- Tích hợp custom image vào **Docker Compose**, loại bỏ dependency vào API để seed data
+- Học về **Docker Hub** và cách push/pull images
+- Hiểu **Public vs Private repositories** và khi nào dùng cái nào
+- Làm quen với **Docker Tags** và tầm quan trọng của versioning
+- Áp dụng **Semantic Versioning** và các tagging best practices
+
+Chương tiếp theo, chúng ta sẽ học cách quản lý **Docker Compose cho nhiều môi trường** (development, staging, production).

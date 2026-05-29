@@ -1,0 +1,414 @@
+## Docker Compose
+
+### Tổng Quan Chương
+
+Trong chương này, chúng ta sẽ mở rộng ứng dụng với nhiều services/containers hơn:
+- Thêm ứng dụng MVC client
+- Tích hợp logging với Serilog
+- Thêm Seq như một log aggregator container
+- Khám phá Docker Compose để orchestrate tất cả containers
+
+---
+
+## Giới Thiệu Logging với Serilog
+
+.NET Core đã có hệ thống logging tích hợp sẵn, nhưng chúng ta muốn mở rộng nó để gửi logs đến một dịch vụ tập trung. Chúng ta sẽ dùng **Serilog** để làm điều này.
+
+### Cài Đặt Serilog
+
+```bash
+# Package Manager Console
+Install-Package Serilog.AspNetCore
+
+# Hoặc CLI
+dotnet add package Serilog.AspNetCore
+```
+
+### Cấu Hình Serilog trong appsettings.json
+
+Thay thế phần `Logging` mặc định bằng cấu hình Serilog:
+
+```json
+{
+  "Serilog": {
+    "Using": ["Serilog.Sinks.Console", "Serilog.Sinks.File"],
+    "MinimumLevel": "Debug",
+    "WriteTo": [
+      {
+        "Name": "Console"
+      },
+      {
+        "Name": "File",
+        "Args": {
+          "path": "C:/logs/ConferenceAttendees/logs-.txt",
+          "rollingInterval": "Day"
+        }
+      }
+    ],
+    "Enrich": ["WithMachineName"],
+    "Properties": {
+      "Application": "ConferenceAttendees.API"
+    }
+  }
+}
+```
+
+Giải thích:
+- **Using**: Khai báo các sink (đích đến của logs) sẽ dùng
+- **MinimumLevel**: Mức log tối thiểu (`Debug` sẽ rất nhiều logs — production nên dùng `Information`)
+- **WriteTo**: Danh sách đích ghi logs: Console + File
+- **rollingInterval**: Tạo file log mới mỗi ngày
+- **Enrich**: Thêm thông tin bổ sung (ví dụ: tên máy chủ)
+- **Properties**: Metadata về ứng dụng
+
+### Đăng Ký Serilog trong Program.cs
+
+```csharp
+builder.Host.UseSerilog((context, configuration) =>
+    configuration.ReadFrom.Configuration(context.Configuration));
+```
+
+Dòng này nói với Serilog: "Khi khởi động, hãy đọc cấu hình từ file `appsettings.json` và tự cấu hình theo đó."
+
+---
+
+## Thêm Seq như Log Aggregator Container
+
+### Seq là gì?
+
+**Seq** là một server log tập trung, self-hosted, được xây dựng cho structured logs và traces. Nó cho phép:
+- Tìm kiếm logs dễ dàng
+- Phân tích và cảnh báo
+- Lọc theo mức độ (Debug, Info, Warning, Error)
+- Xem logs real-time
+
+Seq hoàn toàn có thể được containerize, làm cho nó trở nên portable cùng với ứng dụng.
+
+### Chạy Seq trong Docker
+
+Thay vì cài Seq trực tiếp lên máy (phải download, install và chạy như một Windows Service), chúng ta chạy nó như container:
+
+```bash
+# Pull image
+docker pull datalust/seq
+
+# Chạy Seq container
+docker run --name seq -d --restart unless-stopped -e ACCEPT_EULA=Y -p 5341:80 datalust/seq
+```
+
+Sau khi chạy, truy cập `http://localhost:5341` để thấy Seq UI.
+
+### Kết Nối API với Seq
+
+Cài thêm package Serilog Seq sink:
+```bash
+Install-Package Serilog.Sinks.Seq
+```
+
+Thêm Seq sink vào `appsettings.json`:
+```json
+{
+  "Serilog": {
+    "WriteTo": [
+      { "Name": "Console" },
+      {
+        "Name": "Seq",
+        "Args": {
+          "serverUrl": "http://localhost:5341"
+        }
+      }
+    ]
+  }
+}
+```
+
+Khi API chạy và có requests đến, tất cả logs sẽ được gửi lên Seq. Bạn có thể xem chúng real-time trong Seq UI, thậm chí dùng tính năng "Tail" để stream logs liên tục.
+
+**Vấn đề**: Nếu Seq cài trên máy (không phải container), người khác muốn dùng source code của bạn cũng phải cài Seq — không tiện lợi. Đó là lý do container hóa Seq.
+
+**Kết nối Container API với Container Seq**: Tương tự như vấn đề với SQL Server, cần thay `localhost` bằng `host.docker.internal`:
+```json
+"serverUrl": "http://host.docker.internal:5341"
+```
+
+---
+
+## Thêm Ứng Dụng Client (ASP.NET Core MVC)
+
+### Tạo Project MVC
+
+Thêm project MVC mới vào solution:
+```
+ConferenceAttendees.MVC
+```
+
+Lần này, khi tạo project, hãy **enable Container Support** và chọn Linux — khác với lần trước khi chúng ta thêm thủ công.
+
+### Tích Hợp API với NSwag Studio
+
+Thay vì tự viết HTTP client code, chúng ta dùng **NSwag Studio** để generate code tự động từ Swagger của API.
+
+**Cách sử dụng:**
+1. Chạy API project, lấy URL của `swagger.json` (ví dụ: `https://localhost:7106/swagger/v1/swagger.json`)
+2. Mở NSwag Studio, paste URL vào ô "Specification URL"
+3. Chọn output: **C# Client**
+4. Cấu hình namespace và tên class
+5. Thiết lập output path: `Services/Base/ServiceClient.cs`
+6. Click "Generate Files"
+
+NSwag Studio sẽ generate một class với đầy đủ methods tương ứng với tất cả API endpoints, kèm theo models được generate từ DTOs của API.
+
+### Đăng Ký HTTP Client trong Program.cs (MVC)
+
+```csharp
+builder.Services.AddHttpClient<IApiClient, ApiClient>(client =>
+{
+    client.BaseAddress = new Uri("https://localhost:7106");
+});
+```
+
+Chúng ta inject `IApiClient` vào controllers để gọi API.
+
+### Xây Dựng Form Đăng Ký
+
+Trong `HomeController.Index()`:
+```csharp
+public async Task<IActionResult> Index()
+{
+    ViewData["Genders"] = new SelectList(await _client.GendersGetAsync(), "Id", "Name");
+    ViewData["JobRoles"] = new SelectList(await _client.JobRolesGetAsync(), "Id", "Name");
+    ViewData["ReferralSources"] = new SelectList(await _client.ReferralSourcesGetAsync(), "Id", "Name");
+    return View();
+}
+
+[HttpPost]
+public async Task<IActionResult> Index(Attendee attendee)
+{
+    await _client.AttendeesPostAsync(attendee);
+    return RedirectToAction("Confirmation");
+}
+
+public IActionResult Confirmation()
+{
+    return View();
+}
+```
+
+---
+
+## Khám Phá Docker Compose
+
+### Docker Compose là gì?
+
+**Docker Compose** là công cụ dùng để chạy nhiều containers trong một ứng dụng. Nó được định nghĩa bằng file **YAML** (Yet Another Markup Language).
+
+Docker Compose file:
+- Định nghĩa cách một hoặc nhiều containers nên được khởi động
+- Thường là các containers mà ứng dụng cần
+- Cho phép chạy tất cả với một lệnh duy nhất: `docker compose up`
+
+Tại thời điểm này, ứng dụng của chúng ta cần ít nhất 3 containers chạy đồng thời. Thay vì start từng cái một, Docker Compose sẽ xử lý tất cả tự động.
+
+### Thêm Docker Compose vào Project
+
+**Với Visual Studio:**
+1. Right-click vào một project (ví dụ: API)
+2. **Add** → **Container Orchestrator Support**
+3. Chọn **Docker Compose**
+4. Target OS: **Linux**
+
+VS sẽ tạo thư mục `docker-compose` với file `docker-compose.yml`.
+
+Lặp lại cho project MVC — VS sẽ **append** cấu hình MVC vào file yml hiện có.
+
+### Cấu Trúc File docker-compose.yml Cơ Bản
+
+```yaml
+version: '3.4'
+
+services:
+  conferenceattendees.api:
+    image: conferenceattendees.api
+    build:
+      context: .
+      dockerfile: ConferenceAttendees.API/Dockerfile
+
+  conferenceattendees.mvc:
+    image: conferenceattendees.mvc
+    build:
+      context: .
+      dockerfile: ConferenceAttendees.MVC/Dockerfile
+```
+
+---
+
+## Cấu Hình Docker Compose cho API và MVC
+
+### Chỉ Định Ports Rõ Ràng
+
+Thay vì để Docker tự chọn port ngẫu nhiên, hãy chỉ định rõ:
+
+```yaml
+services:
+  conferenceattendees.api:
+    image: conferenceattendees.api
+    build:
+      context: .
+      dockerfile: ConferenceAttendees.API/Dockerfile
+    ports:
+      - "7106:7106"
+    environment:
+      - ASPNETCORE_URLS=http://+:7106
+
+  conferenceattendees.mvc:
+    image: conferenceattendees.mvc
+    build:
+      context: .
+      dockerfile: ConferenceAttendees.MVC/Dockerfile
+    ports:
+      - "7304:7304"
+    environment:
+      - ASPNETCORE_URLS=http://+:7304
+    depends_on:
+      - conferenceattendees.api
+```
+
+**`depends_on`**: Đảm bảo API container phải được khởi động trước MVC container.
+
+### Cập Nhật Base URL trong MVC
+
+Trong `Program.cs` của MVC, thay vì dùng `localhost`:
+```csharp
+// Sai khi chạy trong container:
+client.BaseAddress = new Uri("https://localhost:7106");
+
+// Đúng - dùng tên service từ docker-compose:
+client.BaseAddress = new Uri("http://conferenceattendees.api:7106");
+```
+
+**Quan trọng**: Trong Docker Compose network, các containers có thể giao tiếp với nhau thông qua **tên service** được định nghĩa trong yml file. Không cần dùng IP hay port của host. Docker Compose tạo một internal network riêng cho tất cả services trong file đó.
+
+---
+
+## Thêm Database và Seq vào Docker Compose
+
+### Hoàn Chỉnh docker-compose.yml
+
+```yaml
+version: '3.4'
+
+services:
+  mssql:
+    image: mcr.microsoft.com/mssql/server:2022-latest
+    container_name: sql2
+    hostname: mssql
+    environment:
+      - SA_PASSWORD=StrongPassword123!
+      - ACCEPT_EULA=Y
+    restart: unless-stopped
+    ports:
+      - "1401:1433"
+
+  seq:
+    image: datalust/seq
+    container_name: seq_logs
+    environment:
+      - ACCEPT_EULA=Y
+    restart: unless-stopped
+    ports:
+      - "5342:80"
+
+  conferenceattendees.api:
+    image: conferenceattendees.api
+    build:
+      context: .
+      dockerfile: ConferenceAttendees.API/Dockerfile
+    ports:
+      - "7106:7106"
+    environment:
+      - ASPNETCORE_URLS=http://+:7106
+    depends_on:
+      - mssql
+      - seq
+
+  conferenceattendees.mvc:
+    image: conferenceattendees.mvc
+    build:
+      context: .
+      dockerfile: ConferenceAttendees.MVC/Dockerfile
+    ports:
+      - "7304:7304"
+    environment:
+      - ASPNETCORE_URLS=http://+:7304
+    depends_on:
+      - conferenceattendees.api
+```
+
+### Cập Nhật Connection Strings dùng Service Names
+
+Trong `appsettings.json` của API:
+```json
+{
+  "ConnectionStrings": {
+    "DefaultConnection": "Server=mssql,1433;Database=ConferenceDb;..."
+  },
+  "Serilog": {
+    "WriteTo": [
+      {
+        "Name": "Seq",
+        "Args": { "serverUrl": "http://seq:80" }
+      }
+    ]
+  }
+}
+```
+
+Bây giờ API sẽ tìm SQL Server qua tên service `mssql` và Seq qua tên service `seq` — không cần `host.docker.internal` hay localhost nữa.
+
+### Thứ Tự Khởi Động (Startup Sequence)
+
+`depends_on` đảm bảo thứ tự:
+1. **mssql** và **seq** khởi động trước
+2. **API** khởi động sau khi mssql và seq sẵn sàng
+3. **MVC** khởi động cuối cùng, sau khi API đã sẵn sàng
+
+Điều này đặc biệt quan trọng khi API có code tự động chạy migration khi startup — database phải sẵn sàng trước.
+
+---
+
+## Chạy Toàn Bộ Stack
+
+```bash
+docker compose up
+```
+
+Hoặc trong Visual Studio, chọn `docker-compose` làm startup project và nhấn Run.
+
+Kết quả:
+- **SQL Server** container khởi động, database được tạo
+- **Seq** container khởi động, sẵn sàng nhận logs
+- **API** khởi động, chạy migrations, kết nối database
+- **MVC** khởi động, kết nối API
+
+Kiểm tra:
+- `http://localhost:7304` — MVC UI với form đăng ký, dropdown lists tải từ API
+- `http://localhost:7106/swagger` — API Swagger docs
+- `http://localhost:5342` — Seq UI hiển thị logs real-time
+
+---
+
+## Tổng Kết Chương
+
+Trong chương này chúng ta đã:
+
+- Tích hợp **Serilog** để logging nâng cao, ghi logs ra console và file
+- Containerize **Seq** như log aggregator tập trung — không cần install thủ công
+- Tạo ứng dụng **MVC client** và integrate với API bằng NSwag Studio (code generation)
+- Khám phá **Docker Compose** và cú pháp YAML
+- Cấu hình Docker Compose để orchestrate API và MVC containers
+- Thêm **SQL Server và Seq** vào Docker Compose với `depends_on` cho startup sequence
+- Dùng **service names** của Docker Compose network để connect giữa các containers
+
+Với Docker Compose, toàn bộ stack ứng dụng (database, logging, API, UI) khởi động với **một lệnh duy nhất** thay vì phải start từng container thủ công.
+
+Chương tiếp theo, chúng ta sẽ khám phá **Docker Compose và Networking** — đi sâu hơn vào cách các containers giao tiếp với nhau.

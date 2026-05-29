@@ -1,0 +1,285 @@
+## Sử Dụng .NET Aspire
+
+### Tổng Quan Chương
+
+Chương cuối này khám phá **.NET Aspire** — một công nghệ hoàn toàn mới của Microsoft (vẫn đang trong preview tại thời điểm khóa học). Aspire mang đến một cách tiếp cận khác biệt trong việc xây dựng ứng dụng Cloud Native:
+- .NET Aspire là gì và tại sao ra đời
+- Kích hoạt .NET Aspire
+- Tạo ứng dụng mẫu với Aspire
+- Service Discovery tích hợp sẵn
+
+---
+
+## .NET Aspire là gì?
+
+Theo tài liệu Microsoft:
+
+> *".NET Aspire is an opinionated, cloud ready stack for building observable, production-ready distributed applications."*
+
+Tạm dịch: .NET Aspire là một stack có chủ kiến, sẵn sàng cho cloud, được thiết kế để xây dựng các ứng dụng phân tán observable và sẵn sàng cho production.
+
+### Các Thành Phần Cốt Lõi
+
+**.NET Aspire** được phân phối qua các **NuGet packages**, xử lý các mối quan tâm Cloud Native cụ thể. Ứng dụng Cloud Native thường bao gồm: databases, messaging, caching, web apps — Aspire giúp wire up tất cả những thứ này.
+
+**Ba trụ cột của Aspire:**
+
+1. **Orchestration**: Cung cấp tính năng chạy và kết nối multi-project applications trong quá trình phát triển local — thay thế cho việc phải cấu hình Docker Compose thủ công
+
+2. **Components**: NuGet packages cho các commonly-used services (Redis, SQL Server, RabbitMQ...) với interface chuẩn hóa, đảm bảo tính nhất quán
+
+3. **Tooling**: Templates sẵn có qua Visual Studio và CLI — giảm thiểu boilerplate code, wiring services, và configuration
+
+### So Sánh với Cách Tiếp Cận Truyền Thống
+
+**Trước Aspire**, để build một distributed app, bạn phải:
+- Cấu hình Serilog manually và point đến Seq
+- Viết Docker Compose để orchestrate services
+- Cấu hình health checks riêng
+- Setup service discovery thủ công
+- Cấu hình OpenTelemetry cho observability
+
+**Với Aspire**, tất cả những thứ này được **tích hợp sẵn** — bạn chỉ cần add một vài dòng code.
+
+---
+
+## Yêu Cầu để Sử Dụng .NET Aspire
+
+Tại thời điểm khóa học, .NET Aspire yêu cầu:
+
+1. **.NET 8.0 trở lên** (không hỗ trợ .NET 7)
+2. **.NET Aspire workload** được cài đặt
+3. **Visual Studio 2022 Preview** phiên bản 17.10 trở lên (hoặc VS Code)
+4. **Docker Desktop** hoặc Podman (container runtime)
+
+### Cài Đặt Aspire Workload
+
+**Qua Visual Studio:**
+1. Mở Visual Studio Installer → Modify
+2. Chọn tab "Individual Components"
+3. Tìm kiếm "Aspire"
+4. Tick vào ".NET Aspire SDK"
+5. Click "Modify"
+
+**Qua CLI:**
+```bash
+# Cập nhật workload list
+dotnet workload update
+
+# Cài .NET Aspire
+dotnet workload install aspire
+
+# Xác nhận
+dotnet workload list
+```
+
+Output:
+```
+Installed Workload Id    Manifest Version
+aspire                   8.0.0/8.0.100
+```
+
+---
+
+## Tạo Ứng Dụng .NET Aspire
+
+### Qua Visual Studio
+
+1. **File** → **New Project**
+2. Tìm kiếm "aspire"
+3. Chọn **".NET Aspire Starter Application"**
+4. Đặt tên: `CloudNativeAspireTest`
+5. Cấu hình:
+   - .NET Version: 8.0
+   - Tick **"Use Redis for caching"** (cần Docker đang chạy)
+6. Click **Create**
+
+### Qua CLI
+
+```bash
+dotnet new aspire-starter -n CloudNativeAspireTest --use-redis-cache -o ./CloudNativeAspireTest
+```
+
+---
+
+## Khám Phá Cấu Trúc Dự Án
+
+Aspire Starter tạo ra 4 projects:
+
+```
+CloudNativeAspireTest/
+├── CloudNativeAspireTest.AppHost/       ← Orchestration host
+├── CloudNativeAspireTest.ServiceDefaults/  ← Shared defaults
+├── CloudNativeAspireTest.ApiService/    ← ASP.NET Core Minimal API
+└── CloudNativeAspireTest.Web/           ← Blazor frontend
+```
+
+### AppHost — Trái Tim của Aspire
+
+`Program.cs` của AppHost:
+
+```csharp
+var builder = DistributedApplication.CreateBuilder(args);
+
+// Thêm Redis cache (sẽ chạy như container)
+var cache = builder.AddRedis("cache");
+
+// Thêm API service
+var apiService = builder.AddProject<Projects.CloudNativeAspireTest_ApiService>("apiservice");
+
+// Thêm Blazor frontend, reference đến API
+builder.AddProject<Projects.CloudNativeAspireTest_Web>("webfrontend")
+    .WithExternalHttpEndpoints()
+    .WithReference(cache)
+    .WithReference(apiService);
+
+builder.Build().Run();
+```
+
+Đây là nơi bạn định nghĩa **toàn bộ kiến trúc** của ứng dụng — các services và mối quan hệ giữa chúng. Aspire tự lo phần orchestration.
+
+### ServiceDefaults — Defaults Tập Trung
+
+`Extensions.cs` trong ServiceDefaults được dùng bởi tất cả các projects:
+
+```csharp
+public static IHostApplicationBuilder AddServiceDefaults(this IHostApplicationBuilder builder)
+{
+    // OpenTelemetry - distributed tracing và metrics
+    builder.AddDefaultHealthChecks();
+
+    // Service discovery - tự động resolve service URLs
+    builder.Services.AddServiceDiscovery();
+
+    // Configure HttpClient với service discovery
+    builder.Services.ConfigureHttpClientDefaults(http =>
+    {
+        http.AddStandardResilienceHandler();
+        http.AddServiceDiscovery();
+    });
+
+    return builder;
+}
+```
+
+**Những gì được thêm tự động:**
+- **OpenTelemetry**: Distributed tracing, metrics, logging tập trung
+- **Health checks**: Kiểm tra health của tất cả services
+- **Service Discovery**: Tự động resolve service URLs theo tên
+- **Resilience**: Retry policies, circuit breakers
+
+### Web Frontend (Blazor)
+
+`Program.cs` của Blazor app:
+
+```csharp
+var builder = WebApplication.CreateBuilder(args);
+
+// Thêm service defaults (health checks, telemetry, service discovery)
+builder.AddServiceDefaults();
+
+// Thêm Redis output caching
+builder.AddRedisOutputCache("cache");
+
+builder.Services.AddRazorComponents()
+    .AddInteractiveServerComponents();
+
+// HTTP Client với service discovery
+// "apiservice" là tên được định nghĩa trong AppHost
+builder.Services.AddHttpClient<WeatherApiClient>(client =>
+{
+    client.BaseAddress = new("https+http://apiservice");
+});
+```
+
+**Chú ý**: `"https+http://apiservice"` là cú pháp Aspire Service Discovery:
+- Không cần port number
+- Không cần IP address
+- Chỉ cần tên service (giống Kubernetes)
+- Aspire tự resolve
+
+---
+
+## Chạy Ứng Dụng Aspire
+
+Khi chạy project **AppHost** (không phải API hay Web riêng lẻ):
+
+1. Aspire tự động:
+   - Pull Redis Docker image và khởi động Redis container
+   - Khởi động API service
+   - Khởi động Blazor frontend
+   - Kết nối tất cả với nhau
+
+2. Mở **Aspire Dashboard** — giao diện web hiển thị:
+   - Tất cả services đang chạy (URL, status)
+   - **Distributed traces**: Theo dõi request qua nhiều services
+   - **Logs tập trung**: Logs từ tất cả services trong một chỗ
+   - **Metrics**: CPU, memory, request counts
+   - **Health checks**: Trạng thái health của từng service
+
+### Aspire Dashboard
+
+Đây là tính năng nổi bật nhất. Thay vì phải:
+- Cấu hình Seq riêng cho logs
+- Cấu hình Prometheus/Grafana cho metrics
+- Setup distributed tracing
+
+Aspire Dashboard cung cấp tất cả trong một giao diện duy nhất, **zero configuration**.
+
+---
+
+## Thêm Aspire vào Dự Án Hiện Có
+
+Nếu bạn đã có project và muốn thêm Aspire:
+
+**Bước 1**: Thêm AppHost project mới vào solution
+
+**Bước 2**: Reference các projects hiện có trong AppHost
+
+**Bước 3**: Trong mỗi project, gọi `AddServiceDefaults()`:
+
+```csharp
+// Program.cs của API
+var builder = WebApplication.CreateBuilder(args);
+builder.AddServiceDefaults(); // Thêm dòng này
+// ...
+```
+
+**Lưu ý**: Nếu bạn đã cấu hình nhiều thứ thủ công (Serilog, health checks...), một số config có thể xung đột. Aspire cung cấp defaults của nó — bạn có thể chọn giữ cấu hình cũ hoặc migrate sang Aspire defaults.
+
+---
+
+## So Sánh: Docker Compose vs Kubernetes vs .NET Aspire
+
+| Tính năng | Docker Compose | Kubernetes | .NET Aspire |
+|-----------|---------------|------------|-------------|
+| Phù hợp cho | Local dev | Production | Local dev |
+| Service Discovery | Qua service name | Qua service name | Tự động |
+| Logging tập trung | Cần cấu hình | Cần cấu hình | Tích hợp sẵn |
+| Health Checks | Cần cấu hình | Cần cấu hình | Tích hợp sẵn |
+| Dashboard | Không có | Kubernetes Dashboard | Aspire Dashboard |
+| Learning curve | Thấp | Cao | Thấp |
+| Production ready | Không | Có | Đang phát triển |
+
+**.NET Aspire** không thay thế Kubernetes — nó được thiết kế cho **local development** và làm cho việc build distributed apps trở nên dễ dàng hơn nhiều.
+
+---
+
+## Tổng Kết Chương
+
+Trong chương này chúng ta đã:
+
+- Hiểu **.NET Aspire** là stack Cloud Native mới của Microsoft, tích hợp orchestration, components và tooling
+- Cài đặt Aspire workload qua Visual Studio Installer hoặc CLI
+- Tạo ứng dụng Aspire starter với Blazor + API + Redis
+- Khám phá **AppHost** — nơi định nghĩa kiến trúc distributed app
+- Hiểu **ServiceDefaults** — nơi tập trung OpenTelemetry, health checks, service discovery
+- Trải nghiệm **Aspire Dashboard** — quan sát tất cả services, logs, traces trong một giao diện
+
+.NET Aspire vẫn đang trong preview — khi ra mắt đầy đủ sẽ có nhiều tính năng và ổn định hơn. Ngay bây giờ, hãy thử nghiệm và làm quen với công nghệ này để sẵn sàng khi nó trở thành mainstream.
+
+---
+
+**Kết thúc khóa học**: Từ containerization với Docker, qua Docker Compose, NGINX reverse proxy, SSL termination, custom images, environment management, đến Kubernetes orchestration và .NET Aspire — bạn đã có đầy đủ nền tảng để xây dựng và deploy ứng dụng Cloud Native hiện đại.
+
+*Never stop learning.*

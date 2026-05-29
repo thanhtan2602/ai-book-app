@@ -1,0 +1,798 @@
+## Giới Thiệu Kubernetes
+
+### Tổng Quan Chương
+
+Đây là chương quan trọng nhất của khóa học. Chúng ta sẽ học:
+- Kubernetes là gì và tại sao cần thiết
+- Cài đặt Kubernetes và kubectl
+- Dashboard UI
+- Tạo manifest files (K8s YAML)
+- Deploy SQL Server, Seq, API và MVC Client
+- Scaling và quản lý tài nguyên
+- Persistent storage (Persistent Volume Claims)
+
+---
+
+## Kubernetes là gì?
+
+**Kubernetes** (hay K8s) là nền tảng mã nguồn mở để **tự động hóa deployment, scaling và vận hành** các ứng dụng container. Được phát triển ban đầu bởi Google, hiện tại được duy trì bởi **Cloud Native Computing Foundation (CNCF)**.
+
+Nếu Docker Compose giúp chúng ta orchestrate containers khi phát triển, Kubernetes là công cụ **chuẩn công nghiệp** cho production.
+
+### Lợi Ích Chính
+
+1. **High Availability**: Không có single point of failure — nếu một container chết, Kubernetes tự động thay thế
+2. **Scalability**: Dễ dàng scale up/down theo demand, thậm chí auto-scaling dựa trên CPU/memory
+3. **Disaster Recovery**: Hỗ trợ backup, restore, và recovery tự động
+4. **Health Monitoring**: Cấu hình health probes để kiểm tra container liên tục
+
+### Kiến Trúc Kubernetes
+
+```
+Kubernetes Cluster
+├── Control Plane (quản lý cluster)
+│   ├── API Server
+│   ├── Scheduler
+│   └── Controller Manager
+└── Worker Nodes (chạy containers)
+    ├── Node 1
+    │   ├── Pod (container + config)
+    │   └── Pod
+    └── Node 2
+        └── Pod
+```
+
+- **Deployment**: Mô tả cách tạo và update instances của ứng dụng
+- **Pod**: Đơn vị nhỏ nhất trong Kubernetes — chứa một hoặc nhiều containers
+- **Service**: Interface ổn định để kết nối đến Pods (vì Pods là ephemeral)
+- **Namespace**: Nhóm logic để tổ chức tài nguyên
+
+---
+
+## Cài Đặt Kubernetes
+
+### Qua Docker Desktop (Đơn Giản Nhất)
+
+1. Mở Docker Desktop → Settings → Kubernetes
+2. Tick **"Enable Kubernetes"**
+3. Tùy chọn: tick "Show system containers"
+4. Click **"Apply & Restart"**
+
+Quá trình cài đặt mất vài phút. Sau khi hoàn thành:
+- Góc phải Docker Desktop hiển thị "Kubernetes running"
+- Nhiều containers mới xuất hiện với prefix `k8s_` hoặc `kube_`
+
+### Xác Nhận Kubernetes Đang Chạy
+
+```bash
+kubectl get nodes
+```
+
+Output:
+```
+NAME             STATUS   ROLES           AGE   VERSION
+docker-desktop   Ready    control-plane   5m    v1.27.2
+```
+
+---
+
+## Lệnh kubectl
+
+**kubectl** (đọc là "kube-control") là công cụ CLI chính cho mọi thao tác Kubernetes.
+
+### Các Lệnh Quan Trọng
+
+```bash
+# Xem tất cả tài nguyên trong namespace
+kubectl get all --namespace cloud-native-dev
+
+# Xem tất cả tài nguyên (default namespace)
+kubectl get all
+
+# Apply manifest file
+kubectl apply -f filename.yaml
+
+# Apply tất cả files trong thư mục
+kubectl apply -f ./k8s/
+
+# Xóa tài nguyên
+kubectl delete pod <pod-name> --namespace cloud-native-dev
+
+# Xóa tất cả trong namespace
+kubectl delete all --all --namespace cloud-native-dev
+
+# Xem logs của pod
+kubectl logs <pod-name> --namespace cloud-native-dev
+
+# Mô tả chi tiết pod (debugging)
+kubectl describe pod -l app=mssql --namespace cloud-native-dev
+
+# Scale deployment
+kubectl scale deployment conference-attendees-api --replicas=3 --namespace cloud-native-dev
+
+# Xem storage classes
+kubectl get storageclass
+```
+
+### Cấu Trúc Manifest File
+
+Mọi K8s resource đều được định nghĩa qua YAML file với cấu trúc:
+
+```yaml
+apiVersion: v1          # API version
+kind: Deployment        # Loại resource
+metadata:               # Metadata
+  name: my-app
+  namespace: my-ns
+spec:                   # Specifications (cụ thể cho từng kind)
+  ...
+```
+
+---
+
+## Cài Đặt Kubernetes Dashboard
+
+Dashboard là giao diện web để quản lý Kubernetes cluster — thay thế cho việc dùng CLI thuần túy.
+
+### Bước 1: Cài Helm
+
+**Helm** là package manager cho Kubernetes (tương tự npm cho Node.js):
+
+```bash
+# Windows (winget)
+winget install Helm.Helm
+```
+
+### Bước 2: Cài Dashboard qua Helm
+
+```bash
+# Thêm Helm repo
+helm repo add kubernetes-dashboard https://kubernetes.github.io/dashboard/
+
+# Cài dashboard
+helm upgrade --install kubernetes-dashboard kubernetes-dashboard/kubernetes-dashboard \
+  --create-namespace --namespace kubernetes-dashboard
+```
+
+### Bước 3: Chạy Dashboard
+
+```bash
+kubectl -n kubernetes-dashboard port-forward svc/kubernetes-dashboard-kong-proxy 8443:443
+```
+
+Truy cập: `https://localhost:8443`
+
+---
+
+## Thiết Lập Dashboard User
+
+### Tạo Service Account
+
+File `admin-user.yaml`:
+```yaml
+apiVersion: v1
+kind: ServiceAccount
+metadata:
+  name: admin-user
+  namespace: kubernetes-dashboard
+```
+
+### Tạo Cluster Role Binding
+
+File `admin-user-cluster-role.yaml`:
+```yaml
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRoleBinding
+metadata:
+  name: admin-user
+roleRef:
+  apiGroup: rbac.authorization.k8s.io
+  kind: ClusterRole
+  name: cluster-admin
+subjects:
+  - kind: ServiceAccount
+    name: admin-user
+    namespace: kubernetes-dashboard
+```
+
+### Apply và Lấy Token
+
+```bash
+# Apply cả hai files
+kubectl apply -f admin-user.yaml
+kubectl apply -f admin-user-cluster-role.yaml
+
+# Tạo token để login
+kubectl -n kubernetes-dashboard create token admin-user
+```
+
+Copy token, paste vào Dashboard login page.
+
+---
+
+## Thiết Lập Namespace
+
+Namespace giúp nhóm các tài nguyên liên quan, tránh xung đột và dễ quản lý.
+
+File `namespace.yaml`:
+```yaml
+apiVersion: v1
+kind: Namespace
+metadata:
+  name: cloud-native-dev
+```
+
+```bash
+kubectl apply -f namespace.yaml
+```
+
+Tất cả resources từ đây sẽ được đặt trong namespace `cloud-native-dev`.
+
+---
+
+## Cấu Trúc Thư Mục K8s
+
+Tạo thư mục `k8s/` trong solution:
+
+```
+k8s/
+├── namespace.yaml
+├── admin-user.yaml
+├── admin-user-cluster-role.yaml
+├── mssql-deployment.yaml
+├── seq-deployment.yaml
+├── api-deployment.yaml
+├── mvc-deployment.yaml
+└── persistent-volumes.yaml
+```
+
+---
+
+## Chạy SQL Server trong Kubernetes
+
+File `mssql-deployment.yaml`:
+
+```yaml
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: mssql
+  namespace: cloud-native-dev
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: mssql
+  template:
+    metadata:
+      labels:
+        app: mssql
+    spec:
+      containers:
+        - name: mssql
+          image: trevorwilliams/conference-attendees-db:latest
+          ports:
+            - containerPort: 1433
+          env:
+            - name: ACCEPT_EULA
+              value: "Y"
+            - name: SA_PASSWORD
+              value: "StrongPassword123!"
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: mssql-svc
+  namespace: cloud-native-dev
+spec:
+  selector:
+    app: mssql
+  type: NodePort
+  ports:
+    - protocol: TCP
+      port: 1434
+      targetPort: 1433
+      nodePort: 31433
+```
+
+**Giải thích Service:**
+- **port**: Port mà service expose bên trong cluster
+- **targetPort**: Port của container cần kết nối
+- **nodePort**: Port expose ra bên ngoài cluster (31000-32767)
+- **NodePort**: Cách đơn giản nhất để truy cập service từ bên ngoài
+
+```bash
+kubectl apply -f k8s/mssql-deployment.yaml
+kubectl get all --namespace cloud-native-dev
+```
+
+Kết nối Azure Data Studio: `localhost,31433` với user `sa`.
+
+---
+
+## Chạy Seq trong Kubernetes
+
+Seq cần 2 services: một NodePort để truy cập từ bên ngoài, một ClusterIP để các services nội bộ gửi logs đến.
+
+File `seq-deployment.yaml`:
+
+```yaml
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: conference-seq
+  namespace: cloud-native-dev
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: conference-seq
+  template:
+    metadata:
+      labels:
+        app: conference-seq
+    spec:
+      containers:
+        - name: conference-seq
+          image: datalust/seq:latest
+          ports:
+            - containerPort: 80    # UI
+            - containerPort: 5341  # Ingestion
+          env:
+            - name: ACCEPT_EULA
+              value: "Y"
+---
+# NodePort - truy cập UI từ bên ngoài
+apiVersion: v1
+kind: Service
+metadata:
+  name: conference-seq-np
+  namespace: cloud-native-dev
+spec:
+  selector:
+    app: conference-seq
+  type: NodePort
+  ports:
+    - port: 80
+      targetPort: 80
+      nodePort: 31538
+---
+# ClusterIP - các services nội bộ gửi logs đến
+apiVersion: v1
+kind: Service
+metadata:
+  name: conference-seq-svc
+  namespace: cloud-native-dev
+spec:
+  selector:
+    app: conference-seq
+  type: ClusterIP
+  ports:
+    - port: 5341
+      targetPort: 5341
+```
+
+**NodePort vs ClusterIP:**
+- **NodePort**: Có external port, cho phép truy cập từ bên ngoài cluster
+- **ClusterIP**: Chỉ có internal port, chỉ các services bên trong cluster có thể kết nối
+
+---
+
+## Build và Push Images
+
+Trước khi deploy API và MVC, cần build Docker images và push lên registry:
+
+```bash
+# Build API image
+docker build -t conference-attendees-api \
+  -f ConferenceAttendees.API/Dockerfile .
+
+# Tag image
+docker tag conference-attendees-api:latest \
+  trevorwilliams/conference-attendees-api:latest
+
+# Push
+docker push trevorwilliams/conference-attendees-api:latest
+
+# Tương tự cho MVC
+docker build -t conference-attendees-mvc \
+  -f ConferenceAttendees.MVC/Dockerfile .
+
+docker tag conference-attendees-mvc:latest \
+  trevorwilliams/conference-attendees-mvc:latest
+
+docker push trevorwilliams/conference-attendees-mvc:latest
+```
+
+---
+
+## Chạy API trong Kubernetes
+
+Điểm quan trọng: Kubernetes có networking riêng, khác với Docker Compose. Chúng ta cần **override connection strings** qua environment variables, dùng service name của SQL Server.
+
+File `api-deployment.yaml`:
+
+```yaml
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: conference-attendees-api
+  namespace: cloud-native-dev
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: conference-attendees-api
+  template:
+    metadata:
+      labels:
+        app: conference-attendees-api
+    spec:
+      containers:
+        - name: conference-attendees-api
+          image: trevorwilliams/conference-attendees-api:latest
+          ports:
+            - containerPort: 80
+          env:
+            # Override connection string để dùng K8s service name
+            - name: ConnectionStrings__DefaultConnection
+              value: "Server=mssql-svc,1434;Database=ConferenceDb;TrustServerCertificate=True;User Id=sa;Password=StrongPassword123!"
+            # Override Serilog để gửi log đến Seq container
+            - name: Serilog__WriteTo__1__Args__serverUrl
+              value: "http://conference-seq-svc:5341"
+            - name: ASPNETCORE_URLS
+              value: "http://+:80"
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: conference-attendees-api-svc
+  namespace: cloud-native-dev
+spec:
+  selector:
+    app: conference-attendees-api
+  type: NodePort
+  ports:
+    - port: 80
+      targetPort: 80
+      nodePort: 31320
+```
+
+**Double underscore (`__`) syntax:**
+
+JSON path: `ConnectionStrings > DefaultConnection`
+
+→ Environment variable: `ConnectionStrings__DefaultConnection`
+
+`Serilog > WriteTo > [1] > Args > serverUrl` → `Serilog__WriteTo__1__Args__serverUrl`
+
+(Array index bắt đầu từ 0: `[0]` là Console sink, `[1]` là Seq sink)
+
+```bash
+kubectl apply -f k8s/api-deployment.yaml
+```
+
+Test: `http://localhost:31320/api/jobroles` — trả về data từ database.
+
+**Lưu ý**: Vì chạy trong Production mode, Swagger không xuất hiện. Dùng Postman hoặc curl để test.
+
+---
+
+## Chạy MVC Client trong Kubernetes
+
+Cần cập nhật `appsettings.json` của MVC để đọc API URL từ config thay vì hardcode:
+
+```csharp
+// Thay vì hardcode:
+client.BaseAddress = new Uri("http://localhost:7106");
+
+// Đọc từ config:
+client.BaseAddress = new Uri(builder.Configuration["BaseApiUrl"]!);
+```
+
+`appsettings.json`:
+```json
+{
+  "BaseApiUrl": "http://localhost:7106"
+}
+```
+
+File `mvc-deployment.yaml`:
+
+```yaml
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: conference-attendees-mvc
+  namespace: cloud-native-dev
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: conference-attendees-mvc
+  template:
+    metadata:
+      labels:
+        app: conference-attendees-mvc
+    spec:
+      containers:
+        - name: conference-attendees-mvc
+          image: trevorwilliams/conference-attendees-mvc:latest
+          ports:
+            - containerPort: 80
+          env:
+            # Override BaseApiUrl để trỏ đến API service trong K8s
+            - name: BaseApiUrl
+              value: "http://conference-attendees-api-svc"
+            - name: Serilog__WriteTo__1__Args__serverUrl
+              value: "http://conference-seq-svc:5341"
+            - name: ASPNETCORE_URLS
+              value: "http://+:80"
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: conference-attendees-mvc-svc
+  namespace: cloud-native-dev
+spec:
+  selector:
+    app: conference-attendees-mvc
+  type: NodePort
+  ports:
+    - port: 80
+      targetPort: 80
+      nodePort: 32020
+```
+
+```bash
+kubectl apply -f k8s/mvc-deployment.yaml
+```
+
+Test: `http://localhost:32020` — form hiển thị với dropdown lists populated = thành công!
+
+---
+
+## Scaling Ứng Dụng
+
+### Thay Đổi Replicas trong Manifest
+
+Sửa `replicas: 3` trong deployment file rồi apply:
+
+```bash
+kubectl apply -f k8s/api-deployment.yaml
+kubectl get all --namespace cloud-native-dev
+```
+
+Output:
+```
+NAME                                           READY   UP-TO-DATE   AVAILABLE
+deployment.apps/conference-attendees-api       3/3     3            3
+```
+
+### Scale bằng CLI
+
+```bash
+# Scale up
+kubectl scale deployment conference-attendees-api \
+  --replicas=3 \
+  --namespace=cloud-native-dev
+
+# Scale down
+kubectl scale deployment conference-attendees-api \
+  --replicas=1 \
+  --namespace=cloud-native-dev
+```
+
+### Horizontal Pod Autoscaler
+
+Tự động scale dựa trên metrics:
+
+```yaml
+apiVersion: autoscaling/v2
+kind: HorizontalPodAutoscaler
+metadata:
+  name: api-hpa
+  namespace: cloud-native-dev
+spec:
+  scaleTargetRef:
+    apiVersion: apps/v1
+    kind: Deployment
+    name: conference-attendees-api
+  minReplicas: 1
+  maxReplicas: 5
+  metrics:
+    - type: Resource
+      resource:
+        name: cpu
+        target:
+          type: Utilization
+          averageUtilization: 50
+    - type: Resource
+      resource:
+        name: memory
+        target:
+          type: AverageValue
+          averageValue: 256Mi
+```
+
+---
+
+## Fault Tolerance Demo
+
+Kubernetes tự động thay thế container bị xóa:
+
+```bash
+# Xem pods đang chạy
+kubectl get all --namespace cloud-native-dev
+
+# Xóa SQL Server pod
+kubectl delete pod mssql-<random-id> --namespace cloud-native-dev
+
+# Ngay lập tức check lại - pod mới đã được tạo!
+kubectl get all --namespace cloud-native-dev
+```
+
+Pod mới có tên khác (hash khác) nhưng cùng configuration — Kubernetes đảm bảo số replicas luôn được duy trì.
+
+---
+
+## Quản Lý Toàn Bộ Cluster
+
+```bash
+# Xóa tất cả trong namespace
+kubectl delete all --all --namespace cloud-native-dev
+
+# Deploy lại tất cả từ thư mục k8s/
+kubectl apply -f ./k8s/
+```
+
+---
+
+## Thêm Persistent Storage
+
+### Vấn Đề
+
+Khi container SQL Server bị xóa và tạo lại, **tất cả data mất**. Containers là ephemeral — không có storage cố định.
+
+### Giải Pháp: Persistent Volume Claims (PVC)
+
+**Persistent Volume Claim** yêu cầu Kubernetes cấp phát storage bên ngoài container. Khi container chết và được tạo lại, nó mount lại volume đó và data vẫn còn.
+
+### Bước 1: Tìm Storage Class
+
+```bash
+kubectl get storageclass
+```
+
+Output:
+```
+NAME                 PROVISIONER          RECLAIMPOLICY
+hostpath (default)   docker.io/hostpath   Delete
+```
+
+### Bước 2: Tạo Persistent Volume Claims
+
+File `persistent-volumes.yaml`:
+
+```yaml
+apiVersion: v1
+kind: PersistentVolumeClaim
+metadata:
+  name: mssql-system
+  namespace: cloud-native-dev
+spec:
+  accessModes:
+    - ReadWriteOnce
+  storageClassName: hostpath
+  resources:
+    requests:
+      storage: 1Gi
+---
+apiVersion: v1
+kind: PersistentVolumeClaim
+metadata:
+  name: mssql-data
+  namespace: cloud-native-dev
+spec:
+  accessModes:
+    - ReadWriteOnce
+  storageClassName: hostpath
+  resources:
+    requests:
+      storage: 1Gi
+---
+apiVersion: v1
+kind: PersistentVolumeClaim
+metadata:
+  name: mssql-log
+  namespace: cloud-native-dev
+spec:
+  accessModes:
+    - ReadWriteOnce
+  storageClassName: hostpath
+  resources:
+    requests:
+      storage: 1Gi
+```
+
+```bash
+kubectl apply -f k8s/persistent-volumes.yaml
+kubectl get pvc --namespace cloud-native-dev
+```
+
+### Bước 3: Mount PVCs vào SQL Server Deployment
+
+Cập nhật `mssql-deployment.yaml`:
+
+```yaml
+spec:
+  template:
+    spec:
+      containers:
+        - name: mssql
+          image: trevorwilliams/conference-attendees-db:latest
+          env:
+            - name: ACCEPT_EULA
+              value: "Y"
+            - name: SA_PASSWORD
+              value: "StrongPassword123!"
+            - name: MSSQL_DATA_DIR
+              value: /var/opt/mssql/data
+            - name: MSSQL_LOG_DIR
+              value: /var/opt/mssql/log
+          volumeMounts:
+            - name: mssql-system-vol
+              mountPath: /var/opt/mssql
+            - name: mssql-data-vol
+              mountPath: /var/opt/mssql/data
+            - name: mssql-log-vol
+              mountPath: /var/opt/mssql/log
+      tolerations:
+        - key: "node.kubernetes.io/unreachable"
+          operator: "Exists"
+          tolerationSeconds: 10
+      volumes:
+        - name: mssql-system-vol
+          persistentVolumeClaim:
+            claimName: mssql-system
+        - name: mssql-data-vol
+          persistentVolumeClaim:
+            claimName: mssql-data
+        - name: mssql-log-vol
+          persistentVolumeClaim:
+            claimName: mssql-log
+```
+
+**Giải thích:**
+- `volumeMounts`: Khai báo trong container — "mount volume này vào đường dẫn này"
+- `volumes`: Khai báo ở cấp Pod — "volume này là PVC tên là..."
+- Tên trong `volumeMounts.name` phải khớp với `volumes.name`
+- Tên trong `volumes.persistentVolumeClaim.claimName` phải khớp với PVC đã tạo
+
+### Debugging Pods
+
+Nếu pod không ready:
+```bash
+kubectl describe pod -l app=mssql --namespace cloud-native-dev
+```
+
+Cuối output có phần `Events` — đây là nơi hiển thị lỗi cụ thể.
+
+---
+
+## Tổng Kết Chương
+
+Trong chương này — chương phức tạp nhất — chúng ta đã:
+
+- Hiểu **Kubernetes** là nền tảng orchestration chuẩn công nghiệp cho production
+- Cài đặt Kubernetes qua Docker Desktop và xác nhận với `kubectl`
+- Cài đặt và sử dụng **Kubernetes Dashboard** với service account authentication
+- Tạo **Namespace** để tổ chức tài nguyên
+- Viết **Manifest YAML files** cho từng component (Deployment + Service)
+- Hiểu sự khác biệt **NodePort** (external access) vs **ClusterIP** (internal only)
+- Override **connection strings** và **Serilog config** bằng environment variables trong K8s
+- **Scale** applications bằng replicas và Horizontal Pod Autoscaler
+- Demo **Fault Tolerance** — Kubernetes tự động recreate pod bị xóa
+- Thêm **Persistent Volume Claims** để data không mất khi container restart
+
+Kubernetes có đường learning curve cao, nhưng những gì bạn học được ở đây là nền tảng vững chắc để tiếp tục nghiên cứu sâu hơn. Chương cuối, chúng ta sẽ khám phá **.NET Aspire** — công nghệ mới của Microsoft.

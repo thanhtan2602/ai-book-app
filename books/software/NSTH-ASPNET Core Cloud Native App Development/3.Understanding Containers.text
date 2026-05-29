@@ -1,0 +1,176 @@
+## Hiểu Về Containers
+
+### Tổng Quan Chương
+
+Trong chương này, chúng ta sẽ tìm hiểu về containerization — bắt đầu từ việc so sánh container với virtual machine, sau đó khám phá Docker — công nghệ containerization phổ biến nhất hiện nay. Chúng ta sẽ cài đặt, cấu hình Docker, và tạo container đầu tiên của mình.
+
+---
+
+## Container là gì?
+
+Theo định nghĩa từ docker.com:
+
+> *"A container is a standard unit of software that packages up code and all its dependencies so the application runs quickly and reliably from one computing environment to another."*
+
+Tạm dịch: Container là một đơn vị phần mềm tiêu chuẩn đóng gói code cùng với tất cả các dependencies, cho phép ứng dụng chạy nhanh và đáng tin cậy từ môi trường tính toán này sang môi trường khác.
+
+### Vấn Đề Containerization Giải Quyết
+
+**Vấn đề 1: Chi phí của Virtualization**
+
+Khi chạy ứng dụng, chúng ta thường không muốn mua một máy chủ lớn chỉ để chạy một ứng dụng. Nhưng mỗi virtual machine đi kèm với chi phí: phần cứng, chi phí vận hành, chi phí hỗ trợ... Tất cả những overhead đó cộng lại thành một gánh nặng đáng kể.
+
+**Vấn đề 2: Tính nhất quán giữa môi trường**
+
+Đôi khi code chạy tốt trong môi trường development nhưng lại gặp vấn đề khi được promote lên môi trường khác. Nguyên nhân thường là phiên bản hệ điều hành khác nhau, phần mềm hỗ trợ khác nhau — có quá nhiều yếu tố nhỏ có thể phá vỡ sự nhất quán giữa các virtual machine.
+
+**Vấn đề 3: Tính di động (Portability)**
+
+Việc chuyển một virtual machine từ server này sang server khác không phải lúc nào cũng dễ dàng. Nếu cần thay đổi hệ điều hành? Đó là một công việc phức tạp hơn nhiều.
+
+---
+
+## Container vs Virtual Machine
+
+Đây không phải là cuộc chiến "ai thắng ai" — đây là sự so sánh để thấy ưu nhược điểm của mỗi công nghệ trong từng ngữ cảnh.
+
+### Virtual Machine
+
+**Ưu điểm:**
+- Linh hoạt hơn — bạn có thể chạy hệ điều hành riêng, cài phần mềm tùy ý
+- Hầu hết hạ tầng production hiện tại vẫn đang chạy trên virtual machine
+
+**Nhược điểm:**
+- Tiêu tốn nhiều tài nguyên hệ thống hơn — mỗi VM cần một phần tài nguyên vật lý được cấp phát riêng
+- Nhiều thủ tục hơn khi khởi tạo — cần provision RAM, storage, CPU cho từng VM
+
+### Container
+
+**Ưu điểm:**
+- **Tái sử dụng và lặp lại dễ dàng**: Chỉ vài lệnh là tạo được container, có thể tái sử dụng bao nhiêu lần tùy thích
+- **Immutable**: Container sẽ hoạt động giống hệt nhau trên máy của bạn và máy của đồng nghiệp — không còn câu "nó chạy được trên máy mình mà!"
+- **Chia sẻ hệ điều hành**: Container chia sẻ OS kernel của máy host, không cần provision OS riêng cho mỗi container — chỉ tiêu tốn đúng tài nguyên cần thiết để chạy ứng dụng
+- **Bảo mật tốt hơn**: Ít bề mặt tấn công hơn vì không phải đối phó với toàn bộ lỗ hổng của OS
+- **Dễ host hơn**: Ít thủ tục hơn khi tạo container
+
+**Nhược điểm:**
+- **Khó monitor hơn**: Cần thiết lập monitoring software riêng và viết các lệnh để theo dõi sức khỏe của container
+- **Orchestration phức tạp**: Cấu hình storage và quản lý nhiều container cùng lúc đòi hỏi kỹ năng
+- **Rủi ro bảo mật về privileges**: Khi provision container, cần đặc biệt chú ý đến mức privileges phù hợp với loại ứng dụng — bạn phải biết cách làm điều này với orchestrator
+
+---
+
+## Docker là gì?
+
+**Docker** là một nền tảng containerization dùng để phát triển, ship và chạy ứng dụng.
+
+- Docker **không yêu cầu hypervisor** — bạn có thể chạy Docker trực tiếp trên desktop hoặc laptop để phát triển hoặc test
+- Hỗ trợ nhiều hệ điều hành
+- Hỗ trợ production workload trên nhiều biến thể Linux và Windows Server
+- Được hỗ trợ bởi nhiều cloud provider lớn, bao gồm Microsoft Azure
+
+---
+
+## Cài Đặt Docker Desktop
+
+Hành trình bắt đầu tại **docker.com**. Từ đây bạn có thể tải về Docker Desktop phù hợp với hệ điều hành của mình (Windows, macOS Intel, macOS Apple Silicon).
+
+**Trên Windows:**
+1. Cài đặt Docker Desktop qua wizard — đây là quá trình cài đặt thông thường
+2. Sau khi cài xong, bạn sẽ được nhắc cài thêm **WSL (Windows Subsystem for Linux)**. Làm theo hướng dẫn từ tài liệu Microsoft (tìm "WSL install" trên Google), chạy lệnh trong PowerShell hoặc Command Prompt với quyền Administrator.
+3. Khi cả Docker Desktop và WSL đã được cài đặt, bạn có thể khởi động Docker Desktop.
+
+**Đăng ký tài khoản Docker Hub:**
+Hãy truy cập **hub.docker.com** và tạo tài khoản. Đây là nơi lưu trữ Docker images công khai — có hàng nghìn images của các ứng dụng phổ biến đã được containerize sẵn: Redis, PostgreSQL, SQL Server, RabbitMQ, MongoDB...
+
+Sau khi đăng nhập vào Docker Desktop bằng tài khoản Hub, bạn sẽ có quyền truy cập vào registry cá nhân của mình.
+
+---
+
+## Kéo Image và Tạo Container
+
+### Bước 1: Kéo Image
+
+Khi Docker được cài xong, bạn có quyền truy cập vào **Docker CLI**. Mở terminal và chạy lệnh `docker` để xác nhận đã cài đặt thành công.
+
+Tiếp theo, chúng ta sẽ kéo image **Microsoft SQL Server**:
+
+```bash
+docker pull mcr.microsoft.com/mssql/server
+```
+
+Docker sẽ tải image về với nhiều layers — bạn sẽ thấy tiến trình download từng layer hiển thị trên terminal.
+
+### Bước 2: Chạy Container
+
+Để chạy SQL Server trong container, dùng lệnh:
+
+```bash
+docker run -e "ACCEPT_EULA=Y" -e "SA_PASSWORD=StrongPassword123!" -p 1400:1433 -d mcr.microsoft.com/mssql/server
+```
+
+Giải thích các tham số:
+
+- **`-e "ACCEPT_EULA=Y"`**: SQL Server yêu cầu chấp nhận điều khoản sử dụng — tương tự như khi cài đặt SQL Server trên Windows
+- **`-e "SA_PASSWORD=..."`**: Đặt mật khẩu cho tài khoản `sa` (System Administrator). Trong container Docker không có Windows Authentication hay Linux Authentication, vì vậy chúng ta cần đặt mật khẩu cho `sa` — đây là user mặc định của SQL Server
+- **`-p 1400:1433`**: Port mapping. SQL Server mặc định lắng nghe trên port `1433`. Bên trái dấu `:` là port trên máy host, bên phải là port trong container. Nếu bạn đã có SQL Server cài sẵn trên Windows thì port `1433` đã bị chiếm dụng, nên cần mapping sang port khác (ví dụ `1400`). Trên Mac/Linux không có SQL Server sẵn thì có thể dùng `1433:1433`
+- **`-d`**: Chạy container ở chế độ detached (background)
+- Cuối cùng là tên image cần chạy
+
+### Bước 3: Xem Container trong Docker Desktop
+
+Sau khi nhấn Enter, container sẽ xuất hiện trong Docker Desktop dưới mục **Containers**. Bạn sẽ thấy:
+- Container đang chạy (Running)
+- Port đang sử dụng (ví dụ: 1400)
+
+Bạn có thể:
+- **Stop/Start** container
+- **Delete** container
+- **Xem logs** — để xác nhận SQL Server đã khởi động thành công
+- **Inspect** — xem các biến môi trường và cấu hình
+- **Mở terminal trong container** — tương tác trực tiếp
+
+### Bước 4: Kết Nối vào SQL Server
+
+**Trên Windows:** Dùng SQL Server Management Studio (SSMS)
+
+**Trên Mac/Linux:** Dùng **Azure Data Studio** (tìm trên Google để tải về)
+
+Cách kết nối:
+- **Server**: `localhost,1400` (hoặc port bạn đã chỉ định)
+- **Authentication**: SQL Login (không phải Windows Authentication)
+- **Username**: `sa`
+- **Password**: Mật khẩu bạn đã đặt khi chạy container
+
+Kết nối thành công bạn sẽ thấy danh sách databases (lúc đầu trống). Container đang chạy SQL Server trong **môi trường Linux** mặc dù máy host của bạn là Windows — đó chính là điều kỳ diệu của containerization.
+
+---
+
+## Docker CLI vs Docker UI
+
+Docker được tài liệu hóa rất tốt. Nếu bạn thấy các lệnh CLI hơi khó nhớ, hãy truy cập tài liệu chính thức tại **docs.docker.com** — tại đây có đầy đủ tài liệu về tất cả các lệnh và tham số của chúng.
+
+**Docker UI** (Docker Desktop) thực chất chỉ là lớp giao diện bọc ngoài các lệnh CLI. Hầu hết những gì bạn làm được trên UI đều có thể thực hiện bằng CLI.
+
+**Lợi thế của CLI:**
+- Bạn có thể viết **script** để tự động hóa mọi thứ Docker cần làm: provision, spin up containers...
+- Lệnh viết một lần, dùng ở nhiều nơi — đặc biệt hữu ích khi cần cross-platform
+
+**Lợi thế của UI:**
+- Trực quan hơn, dễ thao tác hơn cho người mới
+- Phù hợp để monitor và kiểm tra nhanh trạng thái containers
+
+Hãy thử cả hai và chọn cách phù hợp với từng tình huống.
+
+---
+
+## Tổng Kết Chương
+
+Trong chương này chúng ta đã:
+- Hiểu **container là gì** và vấn đề nó giải quyết
+- So sánh **container vs virtual machine** — ưu nhược điểm của mỗi loại
+- Tìm hiểu **Docker** là gì và cài đặt Docker Desktop
+- Kéo image SQL Server và **tạo container đầu tiên**
+- Kết nối vào SQL Server chạy trong container
+
+Tiếp theo, chúng ta sẽ bắt đầu sử dụng containerization trong các dự án .NET thực tế.

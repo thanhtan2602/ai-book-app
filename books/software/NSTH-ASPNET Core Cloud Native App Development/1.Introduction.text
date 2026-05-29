@@ -1,0 +1,75 @@
+## Giới Thiệu
+
+Xin chào và chào mừng bạn đến với khóa học ASP.NET Core Cloud Native. Tôi là Trevor Williams — một kỹ sư phần mềm và giảng viên đã gắn bó với nghề nhiều năm.
+
+Khóa học này nghe có vẻ đơn giản, nhưng thực ra không đơn giản chút nào. Chúng ta sẽ cùng nhau khám phá cách xây dựng ứng dụng Cloud Native — điều này có nghĩa là chúng ta sẽ đi sâu vào containerization, khám phá các khái niệm về images và containers, tìm hiểu Docker (cả giao diện đồ họa lẫn dòng lệnh), hiểu cách Dockerfile hoạt động, học cách publish image của riêng mình, khám phá orchestration với Docker Compose, và cuối cùng là Kubernetes — bao gồm cách viết K8s manifest và file cấu hình. Sau đó chúng ta sẽ tìm hiểu **.NET Aspire**, một công nghệ .NET hoàn toàn mới được thiết kế để hỗ trợ phát triển Cloud Native (mặc dù tại thời điểm khóa học này được thực hiện, .NET Aspire vẫn đang trong giai đoạn preview).
+
+### Công Cụ và Thư Viện
+
+Về phần công cụ và thư viện học tập, chúng ta sẽ sử dụng **.NET 8** cho phần lớn khóa học. Chúng ta cũng sẽ dùng **Visual Studio 2022** là công cụ chính, nhưng với một số thao tác quan trọng, tôi sẽ chỉ cho bạn cách thực hiện tương đương trên **VS Code**.
+
+### Yêu Cầu Trước Khi Bắt Đầu
+
+Tôi khuyến nghị bạn nên có một máy tính đủ mạnh và kết nối internet ổn định. Chúng ta sẽ sử dụng nhiều phần mềm đòi hỏi tài nguyên hệ thống đáng kể, và internet là cần thiết để tải về các tài nguyên cần thiết.
+
+Ngoài ra, bạn nên có ít nhất kiến thức cơ bản về .NET. Bạn không cần phải là chuyên gia — nhưng vì nhiều khái niệm chúng ta thảo luận có thể áp dụng cho các framework khác, việc có nền tảng .NET sẽ giúp bạn tiếp thu thông tin dễ dàng hơn. Nếu bạn cần nâng cao kỹ năng lập trình, tôi có nhiều khóa học khác sẽ đưa bạn từ cơ bản đến trung cấp.
+
+---
+
+**Khóa học này không phải là nơi để học lập trình từ đầu.** Đây là khóa học dành cho những người đã biết lập trình và muốn hiểu các tiêu chuẩn kiến trúc hiện đại. Trọng tâm của chúng ta sẽ là triển khai thực tế với công nghệ .NET, thiết kế hạ tầng và kiến trúc — và những gì bạn học được từ góc độ hạ tầng và kiến trúc đều là các khái niệm có thể áp dụng cho mọi tech stack.
+
+---
+
+## Khái Niệm Cloud Native
+
+### Cloud Native Development là gì?
+
+Hãy cùng thảo luận về Cloud Native Development và ý nghĩa của nó đối với chúng ta — những nhà phát triển phần mềm.
+
+Các kỳ vọng của ngành phát triển phần mềm hiện đại rất cao: chúng ta được yêu cầu **xây dựng, triển khai và vận hành** các ứng dụng hiện đại có thể deploy lên bất kỳ môi trường cloud nào. Vì vậy, ứng dụng phải có tính **scalable cao, linh hoạt, resilient (chống chịu lỗi)** và có khả năng cập nhật nhanh chóng để đáp ứng nhu cầu khách hàng. Chúng ta cũng phải áp dụng các công cụ và kỹ thuật hiện đại để hỗ trợ phát triển, triển khai và bảo trì ứng dụng. Và tất nhiên, việc hỗ trợ phải nhanh, liên tục, và chúng ta phải có khả năng triển khai bản cập nhật mà không làm gián đoạn dịch vụ.
+
+Một **ứng dụng Cloud Native** là chương trình được thiết kế dành riêng cho kiến trúc cloud computing. Thông thường, chúng ta muốn lấy một ứng dụng lớn và chia nhỏ nó thành càng nhiều **service độc lập và tự trị** càng tốt, đóng gói chúng một cách linh hoạt — đôi khi cách tiếp cận này còn được gọi là **microservices**.
+
+Theo định nghĩa chính thức từ tài liệu Microsoft: *"Cloud native architecture and technologies are an approach to designing, constructing, and operating workloads that are built in the cloud and take full advantage of the cloud computing model."*
+
+### Các Trụ Cột của Ứng Dụng Cloud Native
+
+Hãy tưởng tượng các container nhỏ — mỗi container đại diện cho một phần của ứng dụng. Mỗi service có thể nằm trong container riêng của nó. Kể cả với ứng dụng monolithic, toàn bộ ứng dụng có thể nằm trong một container duy nhất, trong khi database nằm trong một container khác, cache trong một container khác...
+
+Điều quan trọng cần nhớ là: **Cloud Native không đồng nghĩa với Microservices**. Điểm mấu chốt là chúng ta đang đóng gói ứng dụng và các dependencies theo cách cho phép nó **portable** — có thể chạy trên nhiều hạ tầng cloud khác nhau.
+
+### Hạ Tầng Cloud
+
+Khi nói đến hạ tầng cloud, chúng ta có AWS, GCP, Microsoft Azure — bạn chọn nền tảng nào phù hợp với nhu cầu kinh doanh và cung cấp các công cụ bạn cần. Điều tuyệt vời của Cloud Native là bạn có thể lấy các container đó và đặt lên bất kỳ cloud nào — ứng dụng của bạn sẽ cơ bản là **Cloud Agnostic** (không phụ thuộc vào một cloud cụ thể), miễn là bạn đã thiết kế đúng cách.
+
+### Lợi Ích của Tiếp Cận Cloud Native
+
+- **Hỗ trợ Microservices tốt hơn**: Mỗi microservice nằm trong container riêng và có thể scale độc lập với ứng dụng lớn hơn
+- **Thiết kế hiện đại**: Áp dụng các mẫu thiết kế phần mềm tiên tiến
+- **Tận dụng Backing Services**: Cơ sở dữ liệu, cache, queue message đều có thể được tích hợp dễ dàng
+- **Tự động hóa mạnh mẽ**: Triển khai và vận hành tự động hóa cao
+
+---
+
+## Tổng Quan Kiến Trúc Khóa Học
+
+Trước khi đi vào chi tiết, đây là cái nhìn tổng quan về những gì chúng ta sẽ xây dựng:
+
+**Cấp độ 1 — Containerize Database:**
+Chúng ta sẽ dùng SQL Server và tìm hiểu cách đưa database vào một container, cũng như lý do tại sao bạn có thể muốn làm điều đó.
+
+**Cấp độ 2 — Xây dựng API:**
+Tiếp theo, chúng ta sẽ tạo một API kết nối với database container đó. Hai thành phần độc lập nằm trong container riêng nhưng có thể giao tiếp với nhau.
+
+**Cấp độ 3 — Tạo Client Application:**
+Một API cần giao diện người dùng. Chúng ta sẽ tạo một ứng dụng client (MVC) cũng được containerize, giao tiếp với API trong container của nó.
+
+**Cấp độ 4 — Reverse Proxy:**
+Chúng ta sẽ thêm một reverse proxy phía trước để định tuyến traffic đến đúng đích (MVC hay API). Bằng cách này, chúng ta có thể cấu hình DNS để người dùng chỉ cần gõ địa chỉ web là traffic sẽ được điều hướng mà không cần truy cập trực tiếp vào các ứng dụng bên trong. Đây là mô hình rất hữu ích trong thực tế.
+
+**Cấp độ 5 — Orchestration:**
+Sau khi containerize tất cả các thành phần, chúng ta sẽ tìm hiểu cách orchestrate chúng — đảm bảo mọi thứ khởi động đúng cách. Chúng ta sẽ làm điều này với Docker Compose, và sau đó khám phá Kubernetes để đảm bảo các ứng dụng container chạy nhất quán và hiệu quả — bao gồm cả các thao tác scaling.
+
+---
+
+Khóa học này chứa đầy ắp công nghệ phát triển hiện đại và thông tin giá trị. Hãy cùng bắt đầu — tôi rất phấn khích và hy vọng bạn cũng vậy!

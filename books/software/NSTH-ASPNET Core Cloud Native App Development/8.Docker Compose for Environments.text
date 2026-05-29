@@ -1,0 +1,335 @@
+## Docker Compose cho Nhiều Môi Trường
+
+### Tổng Quan Chương
+
+Trong chương này, chúng ta sẽ học cách quản lý môi trường (environments) trong ứng dụng containerized:
+- Environment variables là gì và tại sao quan trọng
+- Cấu hình theo môi trường trong ASP.NET Core
+- Chỉ định environment variables cho containers
+- Sử dụng nhiều Docker Compose override files
+- Override configuration values qua environment variables
+
+---
+
+## Environment Variables là gì?
+
+**Environment variables** là công cụ mạnh mẽ trong phát triển phần mềm hiện đại, giúp quản lý ứng dụng trên nhiều môi trường khác nhau **mà không cần thay đổi code**.
+
+Chúng ta đã dùng environment variables từ đầu khóa học:
+- `-e "ACCEPT_EULA=Y"` khi chạy SQL Server container
+- `-e "SA_PASSWORD=..."` để đặt mật khẩu
+- `ASPNETCORE_ENVIRONMENT=Development` trong launch profiles
+
+**Lợi ích chính:**
+- Inject configuration data khác nhau cho mỗi môi trường (dev, staging, production)
+- Tránh hardcode giá trị nhạy cảm trong code
+- Làm ứng dụng linh hoạt và dynamic hơn
+
+---
+
+## Cấu Hình Theo Môi Trường trong ASP.NET Core
+
+### appsettings Files
+
+ASP.NET Core hỗ trợ **cấu hình theo môi trường** thông qua nhiều file `appsettings`:
+
+```
+ConferenceAttendees.API/
+├── appsettings.json                  ← Config chung (tất cả môi trường)
+├── appsettings.Development.json      ← Override cho Development
+├── appsettings.Staging.json          ← Override cho Staging
+└── appsettings.Production.json       ← Override cho Production
+```
+
+**Cách hoạt động**: Khi ứng dụng khởi động, nó đọc `appsettings.json` trước, sau đó dựa vào biến `ASPNETCORE_ENVIRONMENT` để load file override tương ứng. Các giá trị trong file môi trường **ghi đè** giá trị trong file gốc.
+
+### Ví dụ Thực Tế
+
+`appsettings.json` (chung):
+```json
+{
+  "Serilog": {
+    "MinimumLevel": "Information"
+  },
+  "ConnectionStrings": {
+    "DefaultConnection": "Server=mssql,1433;Database=ConferenceDb;..."
+  }
+}
+```
+
+`appsettings.Development.json`:
+```json
+{
+  "EnvironmentValue": "This is a message from Development",
+  "ConnectionStrings": {
+    "DefaultConnection": "Server=mssql,1433;Database=ConferenceDb;User Id=sa;Password=DevPassword!"
+  }
+}
+```
+
+`appsettings.Staging.json`:
+```json
+{
+  "EnvironmentValue": "This is a message from Staging",
+  "ConnectionStrings": {
+    "DefaultConnection": "Server=staging-mssql,1433;Database=ConferenceDb;User Id=sa;Password=StagingPassword!"
+  }
+}
+```
+
+`appsettings.Production.json`:
+```json
+{
+  "EnvironmentValue": "This is a message from Production",
+  "ConnectionStrings": {
+    "DefaultConnection": "Server=prod-db.company.com,1433;Database=ConferenceDb;User Id=sa;Password=ProdPassword!"
+  }
+}
+```
+
+### Đọc Config trong Code
+
+```csharp
+public class HomeController : ControllerBase
+{
+    private readonly IConfiguration _configuration;
+
+    public HomeController(IConfiguration configuration)
+    {
+        _configuration = configuration;
+    }
+
+    [HttpGet]
+    public IActionResult Get()
+    {
+        var value = _configuration["EnvironmentValue"];
+        return Ok(value);
+    }
+}
+```
+
+### Test Các Môi Trường
+
+**Trong Visual Studio**, vào `launchSettings.json` và thay đổi:
+```json
+{
+  "profiles": {
+    "https": {
+      "environmentVariables": {
+        "ASPNETCORE_ENVIRONMENT": "Production"  // Thay đổi để test
+      }
+    }
+  }
+}
+```
+
+**Khi chạy Production mode:**
+- Swagger không xuất hiện (chỉ available trong Development)
+- API endpoint `/api/home` trả về "This is a message from Production"
+
+Đây là cách ASP.NET Core hoạt động — bằng một thay đổi nhỏ ở environment variable, hành vi ứng dụng thay đổi hoàn toàn.
+
+---
+
+## Chỉ Định Environment Variables trong Containers
+
+### Trong docker-compose.override.yml
+
+File override được tạo tự động khi thêm Docker Compose support — đây là nơi phù hợp để đặt environment variables cụ thể cho từng môi trường:
+
+```yaml
+services:
+  conferenceattendees.api:
+    environment:
+      - ASPNETCORE_ENVIRONMENT=Development
+      - ASPNETCORE_URLS=http://+:7106
+
+  conferenceattendees.mvc:
+    environment:
+      - ASPNETCORE_ENVIRONMENT=Development
+      - ASPNETCORE_URLS=http://+:7304
+```
+
+### Kiểm Tra Environment Variables Đang Chạy
+
+Trong Docker Desktop:
+1. Click vào container
+2. Chọn tab **"Inspect"**
+3. Tìm phần `Env` — hiển thị tất cả biến môi trường đang được dùng
+
+Trong logs, ASP.NET Core cũng tự log:
+```
+info: Microsoft.Hosting.Lifetime[0]
+      Hosting environment: Development
+```
+
+---
+
+## Nhiều Docker Compose Override Files
+
+### Vấn Đề
+
+Thay đổi `ASPNETCORE_ENVIRONMENT` trong override file mỗi lần muốn test môi trường khác rất bất tiện và dễ nhầm lẫn.
+
+### Giải Pháp: Multiple Override Files
+
+Tạo file override riêng cho từng môi trường:
+
+```
+docker-compose.yml                    ← File chính
+docker-compose.override.yml          ← Override mặc định (Development)
+docker-compose.staging.yml           ← Override cho Staging
+docker-compose.production.yml        ← Override cho Production
+```
+
+**docker-compose.override.yml** (Development):
+```yaml
+services:
+  conferenceattendees.api:
+    environment:
+      - ASPNETCORE_ENVIRONMENT=Development
+      - ASPNETCORE_URLS=http://+:7106
+
+  conferenceattendees.mvc:
+    environment:
+      - ASPNETCORE_ENVIRONMENT=Development
+      - ASPNETCORE_URLS=http://+:7304
+```
+
+**docker-compose.staging.yml** (Staging):
+```yaml
+services:
+  conferenceattendees.api:
+    environment:
+      - ASPNETCORE_ENVIRONMENT=Staging
+      - ASPNETCORE_URLS=http://+:7106
+
+  conferenceattendees.mvc:
+    environment:
+      - ASPNETCORE_ENVIRONMENT=Staging
+      - ASPNETCORE_URLS=http://+:7304
+```
+
+**docker-compose.production.yml** (Production):
+```yaml
+services:
+  conferenceattendees.api:
+    environment:
+      - ASPNETCORE_ENVIRONMENT=Production
+      - ASPNETCORE_URLS=http://+:7106
+
+  conferenceattendees.mvc:
+    environment:
+      - ASPNETCORE_ENVIRONMENT=Production
+      - ASPNETCORE_URLS=http://+:7304
+```
+
+### Chạy với Override File Cụ Thể
+
+```bash
+# Chạy Development (mặc định, dùng override.yml)
+docker compose up -d
+
+# Chạy Staging
+docker compose -f docker-compose.yml -f docker-compose.staging.yml up -d
+
+# Chạy Production
+docker compose -f docker-compose.yml -f docker-compose.production.yml up -d
+
+# Teardown
+docker compose down
+```
+
+Giải thích cú pháp:
+- `-f docker-compose.yml`: Chỉ định file cấu hình chính
+- `-f docker-compose.staging.yml`: Chỉ định file override sẽ được apply
+- `up -d`: Khởi động tất cả containers ở chế độ detached
+
+Kiểm tra:
+```bash
+# Verify environment đang chạy
+docker inspect <container_name>
+```
+
+---
+
+## Environment Variables như Configuration Values
+
+### Override Connection Strings
+
+Một tính năng mạnh mẽ: bạn có thể override **bất kỳ giá trị nào** trong `appsettings.json` qua environment variables trong Docker Compose, sử dụng cú pháp `__` (double underscore) để navigate vào nested JSON:
+
+```yaml
+services:
+  conferenceattendees.api:
+    environment:
+      - ASPNETCORE_ENVIRONMENT=Production
+      # Override ConnectionStrings:DefaultConnection
+      - ConnectionStrings__DefaultConnection=Server=prod-db.company.com,1433;Database=ConferenceDb;User Id=prod_user;Password=ProdSecretPassword!
+      # Override Serilog:WriteTo:0:Args:serverUrl
+      - Serilog__WriteTo__0__Args__serverUrl=http://seq-prod:5341
+```
+
+**Cú pháp**: JSON path `ConnectionStrings > DefaultConnection` → Environment variable key `ConnectionStrings__DefaultConnection`
+
+### Tại sao Hữu Ích?
+
+Trong production, bạn thường kết nối đến:
+- Managed database (Azure SQL, AWS RDS) thay vì container SQL Server
+- Dedicated logging server thay vì Seq container
+- External services với credentials khác nhau
+
+Thay vì tạo nhiều Docker images (một cho dev, một cho prod), bạn dùng **cùng một image** nhưng inject các giá trị config khác nhau qua environment variables.
+
+---
+
+## Best Practices
+
+### 1. Không Hardcode Secrets
+
+❌ Tránh:
+```yaml
+environment:
+  - SA_PASSWORD=MyActualPassword123!
+```
+
+✅ Tốt hơn: Dùng `.env` file (không commit lên git):
+```yaml
+environment:
+  - SA_PASSWORD=${SQL_PASSWORD}
+```
+
+`.env` file:
+```
+SQL_PASSWORD=MyActualPassword123!
+```
+
+Add `.env` vào `.gitignore`.
+
+### 2. appsettings.json là "Default"
+
+Dữ liệu nhạy cảm (connection strings thật, API keys) không nên trong `appsettings.json`. Chỉ đặt defaults/placeholder, và override bằng environment variables khi deploy.
+
+### 3. Tách Biệt Concerns
+
+- `appsettings.json`: Global defaults, không nhạy cảm
+- `appsettings.Development.json`: Dev-specific config
+- Docker Compose override files: Container-specific environment settings
+- CI/CD pipeline: Inject production secrets
+
+---
+
+## Tổng Kết Chương
+
+Trong chương này chúng ta đã:
+
+- Hiểu **environment variables** — công cụ thiết yếu để quản lý ứng dụng cross-environment
+- Cấu hình **appsettings theo môi trường** trong ASP.NET Core — cùng một key, giá trị khác nhau cho dev/staging/prod
+- Chỉ định **environment variables trong Docker Compose** để control behavior của containers
+- Tạo **nhiều override files** để preset từng môi trường — không cần sửa tay mỗi lần switch
+- Dùng **`docker compose -f`** command để chọn override file phù hợp
+- Override **connection strings và config values** trực tiếp từ Docker Compose bằng double-underscore syntax
+
+Với kiến thức này, bạn có thể xây dựng pipeline deployment hoàn chỉnh cho nhiều môi trường mà không cần tạo nhiều Docker images khác nhau.
+
+Chương tiếp theo, chúng ta sẽ bước vào **Kubernetes** — nền tảng orchestration chuẩn công nghiệp.

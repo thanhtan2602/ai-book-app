@@ -1,0 +1,351 @@
+## Docker và Các Dự Án .NET
+
+### Tổng Quan Chương
+
+Trong chương này, chúng ta sẽ tìm hiểu Docker kết hợp với các dự án .NET như thế nào. Cụ thể:
+- Hỗ trợ containerization có sẵn trong .NET
+- Tạo dự án .NET API
+- Thêm Docker support vào dự án
+- Build Docker image và tạo container
+- Kết nối các container với nhau
+
+---
+
+## Hỗ Trợ Containerization trong .NET
+
+Microsoft đã đầu tư đáng kể vào việc đảm bảo .NET hoạt động tốt trong môi trường container. Có hai lý do chính khiến nhiều developer chọn container cho ứng dụng .NET:
+
+1. **Loại bỏ vấn đề "chạy được trên máy mình"**: Container đóng gói tất cả dependencies cùng với ứng dụng, đảm bảo tính nhất quán giữa các môi trường.
+
+2. **Official .NET container images**: Microsoft publish và duy trì các container image chính thức cho .NET lên **Microsoft Artifact Registry** và Docker Hub. Các image này được cập nhật thường xuyên mỗi khi có patch mới, đảm bảo bạn luôn có môi trường runtime mới nhất.
+
+---
+
+## Tạo Dự Án .NET API
+
+### Với Visual Studio
+
+1. Tạo một **Blank Solution** mới (ví dụ: `ConferenceAttendees`)
+2. Thêm project **ASP.NET Core Web API** vào solution (ví dụ: `ConferenceAttendees.API`)
+3. Chọn .NET 8 (hoặc phiên bản tương thích)
+4. Khi thấy tùy chọn "Enable Docker Support" — **bỏ qua tùy chọn này**. Chúng ta sẽ thêm Docker support thủ công sau để hiểu rõ cơ chế
+
+### Với Visual Studio Code
+
+Nếu không có Visual Studio, hãy cài VS Code và extension **C# DevKit**. Extension này cung cấp nhiều lệnh CLI tương đương và giao diện Solution Explorer tương tự VS.
+
+Tạo project bằng lệnh:
+```bash
+# Từ VS Code, nhấn Ctrl+Shift+P và chọn "Create .NET Project"
+# Hoặc dùng CLI:
+dotnet new webapi -n ConferenceAttendees.API
+```
+
+---
+
+## Cấu Trúc Dự Án Mẫu
+
+Dự án **Conference Attendees** của chúng ta có cấu trúc:
+
+```
+ConferenceAttendees.API/
+├── Data/
+│   ├── ApplicationDbContext.cs
+│   ├── Configurations/
+│   │   ├── AttendeeConfiguration.cs
+│   │   ├── GenderConfiguration.cs
+│   │   ├── JobRoleConfiguration.cs
+│   │   └── ReferralSourceConfiguration.cs
+│   └── Entities/
+│       ├── BaseEntity.cs
+│       ├── Attendee.cs
+│       ├── Gender.cs
+│       ├── JobRole.cs
+│       └── ReferralSource.cs
+```
+
+### Database Models
+
+**BaseEntity** — lớp trừu tượng cơ sở:
+```csharp
+public abstract class BaseEntity
+{
+    public Guid Id { get; set; }
+}
+```
+
+Các entity `Gender`, `JobRole`, `ReferralSource` đều kế thừa từ `BaseEntity` và thêm thuộc tính `Name`.
+
+**Attendee** kế thừa từ `BaseEntity` và có các thuộc tính:
+- FirstName, LastName, Email, PhoneNumber, Company
+- FK đến Gender, JobRole, ReferralSource
+
+### ApplicationDbContext
+
+```csharp
+public class ApplicationDbContext : DbContext
+{
+    public ApplicationDbContext(DbContextOptions<ApplicationDbContext> options)
+        : base(options) { }
+
+    protected override void OnModelCreating(ModelBuilder modelBuilder)
+    {
+        modelBuilder.ApplyConfigurationsFromAssembly(Assembly.GetExecutingAssembly());
+    }
+
+    public DbSet<Attendee> Attendees { get; set; }
+    public DbSet<Gender> Genders { get; set; }
+    public DbSet<JobRole> JobRoles { get; set; }
+    public DbSet<ReferralSource> ReferralSources { get; set; }
+}
+```
+
+### Cấu Hình Seed Data
+
+Trong configuration files, chúng ta seed một số dữ liệu ban đầu:
+- **Genders**: Male, Female
+- **JobRoles**: Manager, Supervisor, Engineer...
+- **ReferralSources**: Internet, Advertisement, Television...
+
+Mục đích là tạo dữ liệu bootstrap để tập trung vào phần kiến trúc và hạ tầng thay vì coding.
+
+---
+
+## Kết Nối với Database Container
+
+### Cấu Hình Connection String
+
+Trong `appsettings.json`:
+```json
+{
+  "ConnectionStrings": {
+    "DefaultConnection": "Server=localhost,1400;Database=ConferenceDb;TrustServerCertificate=False;MultipleActiveResultSets=True;Encrypt=False;User Id=sa;Password=StrongPassword123!"
+  }
+}
+```
+
+Lưu ý: `localhost,1400` trỏ đến SQL Server container đang chạy trên port 1400 (như đã cấu hình trong chương trước).
+
+### Đăng Ký DbContext trong Program.cs
+
+```csharp
+builder.Services.AddDbContext<ApplicationDbContext>(options =>
+    options.UseSqlServer(builder.Configuration.GetConnectionString("DefaultConnection")));
+```
+
+### Tạo và Áp Dụng Migration
+
+**Với Visual Studio (Package Manager Console):**
+```
+Add-Migration InitialMigration
+Update-Database
+```
+
+**Với VS Code / CLI:**
+```bash
+dotnet tool install --global dotnet-ef
+dotnet ef migrations add InitialMigration
+dotnet ef database update
+```
+
+Lệnh `Update-Database` sẽ đọc connection string, kết nối với SQL Server container, và tạo database + tables theo migration. Sau khi chạy thành công, bạn có thể kết nối vào container và thấy đầy đủ các tables đã được tạo.
+
+---
+
+## Thêm Docker Support
+
+### Cách 1: Thông qua Visual Studio
+
+1. Right-click vào project
+2. Chọn **Add** → **Docker Support**
+3. Chọn **Target OS**: Linux
+4. VS sẽ tạo file `Dockerfile` tự động
+
+### Cách 2: Thông qua VS Code
+
+1. Nhấn `Ctrl+Shift+P`
+2. Tìm **"Docker: Add Docker Files to Workspace"**
+3. Chọn platform: **ASP.NET Core**
+4. Chọn OS: **Linux**
+5. VS Code sẽ tạo `Dockerfile`
+
+---
+
+## Hiểu Dockerfile
+
+Dockerfile được tạo tự động có cấu trúc như sau:
+
+```dockerfile
+# Stage 1: Base runtime image
+FROM mcr.microsoft.com/dotnet/aspnet:8.0 AS base
+WORKDIR /app
+EXPOSE 8080
+EXPOSE 8081
+
+# Stage 2: Build
+FROM mcr.microsoft.com/dotnet/sdk:8.0 AS build
+WORKDIR /src
+COPY ["ConferenceAttendees.API/ConferenceAttendees.API.csproj", "ConferenceAttendees.API/"]
+RUN dotnet restore "ConferenceAttendees.API/ConferenceAttendees.API.csproj"
+COPY . .
+WORKDIR "/src/ConferenceAttendees.API"
+RUN dotnet build "ConferenceAttendees.API.csproj" -c Release -o /app/build
+
+# Stage 3: Publish
+FROM build AS publish
+RUN dotnet publish "ConferenceAttendees.API.csproj" -c Release -o /app/publish
+
+# Stage 4: Final image
+FROM base AS final
+WORKDIR /app
+COPY --from=publish /app/publish .
+ENTRYPOINT ["dotnet", "ConferenceAttendees.API.dll"]
+```
+
+**Giải thích các giai đoạn:**
+
+1. **Base**: Lấy runtime image của .NET (không có SDK, nhẹ hơn) và expose các port
+2. **Build**: Dùng SDK image để build source code
+3. **Publish**: Publish ứng dụng đã build thành output
+4. **Final**: Copy output vào runtime image nhẹ và thiết lập entrypoint
+
+---
+
+## Launch Profiles và Environment Variables
+
+Khi thêm Dockerfile, VS/VS Code sẽ thêm một profile mới vào `launchSettings.json`:
+
+```json
+{
+  "profiles": {
+    "http": {
+      "applicationUrl": "http://localhost:5000",
+      "environmentVariables": {
+        "ASPNETCORE_ENVIRONMENT": "Development"
+      }
+    },
+    "Container (Dockerfile)": {
+      "commandName": "Docker",
+      "launchBrowser": true,
+      "launchUrl": "{Scheme}://{ServiceHost}:{ServicePort}/swagger",
+      "environmentVariables": {
+        "ASPNETCORE_HTTPS_PORTS": "8081",
+        "ASPNETCORE_HTTP_PORTS": "8080"
+      }
+    }
+  }
+}
+```
+
+**Điều quan trọng về Environment Variables:**
+- Khi chạy trong VS (Development), biến `ASPNETCORE_ENVIRONMENT=Development` được set tự động
+- Khi publish/deploy lên server thật, mặc định là `Production`
+- Swagger chỉ hiển thị ở môi trường Development — đây là lý do khi chạy container production mode bạn không thấy Swagger
+
+---
+
+## Chạy App Như Container từ Visual Studio
+
+Khi chọn profile "Container (Dockerfile)" và nhấn Run:
+1. Visual Studio đọc Dockerfile
+2. Build Docker image
+3. Tạo và chạy container từ image đó
+
+**Lưu ý quan trọng**: Nếu bạn có đoạn code tự động migrate database khi startup, hãy đảm bảo SQL Server container đang chạy trước. Nếu không, app sẽ lỗi vì không kết nối được database.
+
+Visual Studio cũng có tab **Containers** trong panel windows, cho phép bạn:
+- Xem danh sách containers VS đang quản lý
+- Xem environment variables của từng container
+- Xem ports, volumes, logs
+- Tương tác với container
+
+---
+
+## Containerize Bằng dotnet publish (Không Cần Dockerfile)
+
+Kể từ .NET 7, có thể tạo container image mà **không cần viết Dockerfile**:
+
+### Bước 1: Cấu hình .csproj
+
+Thêm tag vào file `.csproj`:
+```xml
+<PropertyGroup>
+  <ContainerRepository>conference-attendees-api</ContainerRepository>
+</PropertyGroup>
+```
+
+### Bước 2: Publish Container
+
+```bash
+dotnet publish --os linux --arch x64 /t:PublishContainer -c Release
+```
+
+Giải thích các tham số:
+- `--os linux`: Target OS là Linux
+- `--arch x64`: Architecture x64
+- `/t:PublishContainer`: Build và push image vào local Docker registry
+- `-c Release`: Cấu hình Release
+
+Lệnh này sẽ:
+1. Build ứng dụng
+2. Tạo Docker image
+3. Push image vào local Docker registry (Docker Desktop)
+
+### Bước 3: Chạy Container
+
+```bash
+docker run -p 5000:8080 -p 5001:8081 --rm conference-attendees-api:latest
+```
+
+---
+
+## Vấn Đề Kết Nối Giữa Các Container
+
+### Vấn Đề
+
+Khi chạy API trong container và cố kết nối đến SQL Server container bằng `localhost,1400`, bạn sẽ gặp lỗi kết nối. Tại sao?
+
+**Vì Docker có mạng nội bộ riêng của nó.** Khi container đã được đóng gói và chạy trong Docker network, `localhost` trong container không phải là `localhost` của máy host — nó trỏ đến chính container đó.
+
+### Giải Pháp
+
+Thay thế `localhost` bằng `host.docker.internal`:
+
+```json
+{
+  "ConnectionStrings": {
+    "DefaultConnection": "Server=host.docker.internal,1400;Database=ConferenceDb;..."
+  }
+}
+```
+
+`host.docker.internal` là hostname đặc biệt mà Docker cung cấp, trỏ đến máy host từ bên trong container. Điều này cho phép container "nhìn thấy" các service đang chạy trên máy host, kể cả các container khác đang expose port ra ngoài.
+
+Sau khi thay đổi connection string, rebuild và publish lại image, container API sẽ kết nối thành công với SQL Server container.
+
+---
+
+## Kiểm Tra Kết Quả
+
+Dùng **Postman** hoặc **Swagger** để test API:
+- `GET /api/genders` → Trả về danh sách genders đã seed
+- `POST /api/jobroles` → Tạo job role mới
+- Kiểm tra database để xác nhận dữ liệu được lưu thành công
+
+**Debug trong container**: Kể cả khi chạy như container, bạn vẫn có thể đặt breakpoint trong Visual Studio và debug bình thường — container vẫn hỗ trợ đầy đủ debugging experience.
+
+---
+
+## Tổng Kết Chương
+
+Trong chương này chúng ta đã:
+
+- Hiểu **hỗ trợ containerization của .NET** — Microsoft duy trì official images được cập nhật thường xuyên
+- Tạo **dự án .NET API** với Entity Framework Core kết nối vào SQL Server container
+- Thêm **Docker support** thông qua Dockerfile (Visual Studio / VS Code)
+- Hiểu cấu trúc **multi-stage Dockerfile** và mục đích của từng stage
+- Chạy ứng dụng như container từ Visual Studio và debug được bình thường
+- Sử dụng **`dotnet publish /t:PublishContainer`** để tạo container image không cần Dockerfile
+- Giải quyết vấn đề kết nối container-to-container bằng **`host.docker.internal`**
+
+Chương tiếp theo, chúng ta sẽ khám phá **Docker Compose** — công cụ giúp quản lý nhiều container cùng lúc một cách dễ dàng hơn nhiều.
